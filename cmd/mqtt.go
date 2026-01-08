@@ -1111,6 +1111,132 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 			"model": "Outlander PHEV"
 		},
 		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_heat_10/config": `{
+		"name": "__NAME__ Heat 10 min",
+		"icon": "mdi:fire",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "heat:10",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_heat_10",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_heat_20/config": `{
+		"name": "__NAME__ Heat 20 min",
+		"icon": "mdi:fire",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "heat:20",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_heat_20",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_heat_30/config": `{
+		"name": "__NAME__ Heat 30 min",
+		"icon": "mdi:fire",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "heat:30",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_heat_30",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_cool_10/config": `{
+		"name": "__NAME__ Cool 10 min",
+		"icon": "mdi:snowflake",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "cool:10",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_cool_10",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_cool_20/config": `{
+		"name": "__NAME__ Cool 20 min",
+		"icon": "mdi:snowflake",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "cool:20",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_cool_20",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_cool_30/config": `{
+		"name": "__NAME__ Cool 30 min",
+		"icon": "mdi:snowflake",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "cool:30",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_cool_30",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_windscreen_10/config": `{
+		"name": "__NAME__ Windscreen 10 min",
+		"icon": "mdi:car-defrost-front",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "windscreen:10",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_windscreen_10",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_windscreen_20/config": `{
+		"name": "__NAME__ Windscreen 20 min",
+		"icon": "mdi:car-defrost-front",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "windscreen:20",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_windscreen_20",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_windscreen_30/config": `{
+		"name": "__NAME__ Windscreen 30 min",
+		"icon": "mdi:car-defrost-front",
+		"command_topic": "~/set/climate/now",
+		"payload_press": "windscreen:30",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_windscreen_30",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
 		// Lights.
 		"%s/light/%s_parkinglights/config": `{
 		"name": "__NAME__ Park Lights",
