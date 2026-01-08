@@ -1018,6 +1018,99 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		},
 				"icon": "mdi:car-seat-heater",
 				"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_stop/config": `{
+		"name": "__NAME__ Stop Climate",
+		"icon": "mdi:stop-circle",
+		"command_topic": "~/set/climate/stop",
+		"payload_press": "",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_stop",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_climate_timer_1/config": `{
+		"name": "__NAME__ Climate Timer 1",
+		"icon": "mdi:timer",
+		"state_topic": "~/climate/timer/1",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_timer_1",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_climate_timer_2/config": `{
+		"name": "__NAME__ Climate Timer 2",
+		"icon": "mdi:timer",
+		"state_topic": "~/climate/timer/2",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_timer_2",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_climate_timer_3/config": `{
+		"name": "__NAME__ Climate Timer 3",
+		"icon": "mdi:timer",
+		"state_topic": "~/climate/timer/3",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_timer_3",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_climate_timer_4/config": `{
+		"name": "__NAME__ Climate Timer 4",
+		"icon": "mdi:timer",
+		"state_topic": "~/climate/timer/4",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_timer_4",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_climate_timer_5/config": `{
+		"name": "__NAME__ Climate Timer 5",
+		"icon": "mdi:timer",
+		"state_topic": "~/climate/timer/5",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_timer_5",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_climate_clear_timers/config": `{
+		"name": "__NAME__ Clear All Climate Timers",
+		"icon": "mdi:timer-off",
+		"command_topic": "~/set/climate/timer/clear",
+		"payload_press": "",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___climate_clear_timers",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
 		// Lights.
 		"%s/light/%s_parkinglights/config": `{
 		"name": "__NAME__ Park Lights",
