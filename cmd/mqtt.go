@@ -334,17 +334,34 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 		}
 
 		if m.phev.ModelYear == client.ModelYear14 {
-			// Set the AC mode first
-			registerPayload := bytes.Repeat([]byte{0xff}, 15)
-			registerPayload[0] = 0x0
-			registerPayload[1] = 0x0
-			registerPayload[6] = mode | duration
-			if err := m.phev.SetRegister(protocol.SetACModeRegisterMY14, registerPayload); err != nil {
-				log.Infof("Error setting AC mode: %v", err)
-				return
+			// MY2014 uses different approach - based on GitHub issue #11
+			// Use register 0x05 for climate timer setting approach
+			log.Debugf("Setting MY2014 climate mode: %d, duration: %d", mode, duration)
+
+			// First, try the climate timer register approach (0x05)
+			// This mimics what the official app does according to the GitHub issue
+			timerPayload := make([]byte, 16)
+			if mode != 0x0 {
+				// Encode the climate setting in timer format
+				// Based on protocol docs: Timer encoding with immediate activation
+				timerPayload[0] = 0x01  // Enable immediate
+				timerPayload[1] = mode | duration  // Mode and duration combined
 			}
 
-			// Then, enable/disable the AC
+			if err := m.phev.SetRegister(0x05, timerPayload); err != nil {
+				log.Infof("Error setting climate timer (0x05): %v", err)
+				// Fallback to original method if timer method fails
+				registerPayload := bytes.Repeat([]byte{0xff}, 15)
+				registerPayload[0] = 0x0
+				registerPayload[1] = 0x0
+				registerPayload[6] = mode | duration
+				if err := m.phev.SetRegister(protocol.SetACModeRegisterMY14, registerPayload); err != nil {
+					log.Infof("Error setting AC mode (fallback): %v", err)
+					return
+				}
+			}
+
+			// Enable/disable the AC
 			acEnabled := byte(0x02)
 			if mode == 0x0 {
 				acEnabled = 0x01

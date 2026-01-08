@@ -193,30 +193,62 @@ func (c *Client) SetRegister(register byte, value []byte) error {
 			Xor:      xor,
 		}
 	}
-	xor := byte(0)
-	timer := time.After(10 * time.Second)
-	l := c.AddListener()
-	defer c.RemoveListener(l)
-SETREG:
-	setRegister(xor)
-	for {
-		select {
-		case <-timer:
-			return fmt.Errorf("timed out attempting to set register %02x", register)
-		case msg, ok := <-l.C:
-			if !ok {
-				return fmt.Errorf("listener channel closed")
-			}
-			if msg.Type == protocol.CmdInBadEncoding {
-				xor = msg.Data[0]
-				goto SETREG
-			}
-			if msg.Type == protocol.CmdInResp && msg.Ack == protocol.Ack && msg.Register == register {
-				return nil
-			}
 
+	// Use longer timeout for MY2014 climate control registers (issue #11)
+	timeout := 10 * time.Second
+	if c.ModelYear == ModelYear14 && (register == 0x02 || register == 0x04 || register == 0x05) {
+		timeout = 20 * time.Second
+	}
+
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		xor := byte(0)
+		timer := time.After(timeout)
+		l := c.AddListener()
+		retryCount := 0
+		maxRetriesPerAttempt := 5
+
+	SETREG:
+		if retryCount >= maxRetriesPerAttempt {
+			c.RemoveListener(l)
+			log.Warnf("Max retries reached for register %02x, attempt %d/%d", register, attempt+1, maxRetries)
+			break
+		}
+		setRegister(xor)
+		retryCount++
+
+		for {
+			select {
+			case <-timer:
+				c.RemoveListener(l)
+				log.Warnf("Timeout setting register %02x, attempt %d/%d", register, attempt+1, maxRetries)
+				goto NEXTRETRY
+			case msg, ok := <-l.C:
+				if !ok {
+					c.RemoveListener(l)
+					return fmt.Errorf("listener channel closed")
+				}
+				if msg.Type == protocol.CmdInBadEncoding {
+					if len(msg.Data) > 0 {
+						xor = msg.Data[0]
+						log.Debugf("Bad encoding for register %02x, retrying with XOR %02x", register, xor)
+					}
+					goto SETREG
+				}
+				if msg.Type == protocol.CmdInResp && msg.Ack == protocol.Ack && msg.Register == register {
+					c.RemoveListener(l)
+					log.Debugf("Successfully set register %02x", register)
+					return nil
+				}
+			}
+		}
+	NEXTRETRY:
+		// Small delay between attempts
+		if attempt < maxRetries-1 {
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
+	return fmt.Errorf("failed to set register %02x after %d attempts", register, maxRetries)
 }
 
 func (c *Client) nextRecvMsg(deadline time.Time) (*protocol.PhevMessage, error) {

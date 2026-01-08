@@ -284,8 +284,17 @@ func decodeTime(m []byte) time.Time {
 
 const (
 	BatteryWarningRegister   = 0x02
-	SetACModeRegisterMY14    = 0x02
+	SetACModeRegisterMY14    = 0x02  // MY2014 uses 0x02 for setting AC mode (different from read)
 	SetACEnabledRegisterMY14 = 0x04
+
+	// MY2014 specific register behaviors:
+	// 0x12 returns the data being sent to 0x05, except for the last two zeroes
+	// 0x10 always returns 02, except when the AC state is off, then 01
+	// 0x1a always returns 0001, except when AC state is off, then 0000
+	// 0x1c returns the current state with specific timing encoding:
+	//   01/11/21 = Cool for 10/20/30 minutes
+	//   02/12/22 = Heat for 10/20/30 minutes
+	//   03/13/23 = Heat windscreen for 10/20/30 minutes
 	PreACStateRegister       = 0x10
 	TimeRegister             = 0x12
 	SetAckPreACTermRegister  = 0x13
@@ -788,23 +797,59 @@ func (r *RegisterACMode) Decode(m *PhevMessage) {
 	if len(m.Data) != 1 {
 		return
 	}
-	switch m.Data[0] & 0x0f {
-	case 0:
-		r.Mode = "unknown"
-	case 1:
+
+	// MY2014 specific decoding based on user input:
+	// 01/11/21 = Cool for 10/20/30 minutes
+	// 02/12/22 = Heat for 10/20/30 minutes
+	// 03/13/23 = Heat windscreen for 10/20/30 minutes
+	switch m.Data[0] {
+	case 0x01:
 		r.Mode = "cool"
-	case 2:
-		r.Mode = "heat"
-	case 3:
-		r.Mode = "windscreen"
-	}
-	switch m.Data[0] & 0xf0 {
-	case 0x00:
 		r.Duration = 10
-	case 0x10:
+	case 0x11:
+		r.Mode = "cool"
 		r.Duration = 20
-	case 0x20:
+	case 0x21:
+		r.Mode = "cool"
 		r.Duration = 30
+	case 0x02:
+		r.Mode = "heat"
+		r.Duration = 10
+	case 0x12:
+		r.Mode = "heat"
+		r.Duration = 20
+	case 0x22:
+		r.Mode = "heat"
+		r.Duration = 30
+	case 0x03:
+		r.Mode = "windscreen"
+		r.Duration = 10
+	case 0x13:
+		r.Mode = "windscreen"
+		r.Duration = 20
+	case 0x23:
+		r.Mode = "windscreen"
+		r.Duration = 30
+	default:
+		// Fallback to original decoding for other model years
+		switch m.Data[0] & 0x0f {
+		case 0:
+			r.Mode = "unknown"
+		case 1:
+			r.Mode = "cool"
+		case 2:
+			r.Mode = "heat"
+		case 3:
+			r.Mode = "windscreen"
+		}
+		switch m.Data[0] & 0xf0 {
+		case 0x00:
+			r.Duration = 10
+		case 0x10:
+			r.Duration = 20
+		case 0x20:
+			r.Duration = 30
+		}
 	}
 	r.raw = m.Data
 }
