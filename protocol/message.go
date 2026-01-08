@@ -211,6 +211,8 @@ func (p *PhevMessage) DecodeFromBytes(data []byte, key *SecurityKey) error {
 			p.Reg = new(RegisterWIFISSID)
 		case LightStatusRegister:
 			p.Reg = new(RegisterLightStatus)
+		case ClimateTimerRegister:
+			p.Reg = new(RegisterClimateTimer)
 		default:
 			p.Reg = new(RegisterGeneric)
 		}
@@ -286,6 +288,8 @@ const (
 	BatteryWarningRegister   = 0x02
 	SetACModeRegisterMY14    = 0x02  // MY2014 uses 0x02 for setting AC mode (different from read)
 	SetACEnabledRegisterMY14 = 0x04
+	ClimateTimerRegister     = 0x05  // Climate timer settings (read)
+	SetClimateTimerRegister  = 0x1a  // Set climate timer schedule (write)
 
 	// MY2014 specific register behaviors:
 	// 0x12 returns the data being sent to 0x05, except for the last two zeroes
@@ -1015,4 +1019,163 @@ func (r *RegisterLightStatus) String() string {
 
 func (r *RegisterLightStatus) Register() byte {
 	return LightStatusRegister
+}
+
+// ClimateTimer represents a single climate timer
+type ClimateTimer struct {
+	Enabled  bool
+	Hour     uint8  // 0-23
+	Minute   uint8  // 0, 10, 20, 30, 40, 50
+	Mode     string // "cool", "heat", "windscreen"
+	Duration uint8  // 10, 20, 30 (minutes)
+	Days     []string // ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+}
+
+// RegisterClimateTimer handles climate timer settings (register 0x05)
+type RegisterClimateTimer struct {
+	Timers [5]ClimateTimer // 5 available timers
+	raw    []byte
+}
+
+func (r *RegisterClimateTimer) Decode(m *PhevMessage) {
+	if len(m.Data) != 16 {
+		return
+	}
+	r.raw = m.Data
+
+	// Parse each timer (3 bytes each, starting at offset 1)
+	for i := 0; i < 5; i++ {
+		offset := 1 + i*3
+		if offset+2 >= len(m.Data) {
+			break
+		}
+
+		// Extract 3 bytes and convert from big endian
+		timer24bit := uint32(m.Data[offset])<<16 | uint32(m.Data[offset+1])<<8 | uint32(m.Data[offset+2])
+
+		// Skip disabled timers (all 0xff bytes)
+		if timer24bit == 0xfe0700 || timer24bit == 0xffffff {
+			r.Timers[i].Enabled = false
+			continue
+		}
+
+		r.Timers[i] = decodeClimateTimer(timer24bit)
+	}
+}
+
+func (r *RegisterClimateTimer) Encode() *PhevMessage {
+	data := make([]byte, 16)
+	data[0] = 0x01 // Unknown first byte
+
+	// Encode each timer
+	for i := 0; i < 5; i++ {
+		offset := 1 + i*3
+		if !r.Timers[i].Enabled {
+			// Disabled timer
+			data[offset] = 0xfe
+			data[offset+1] = 0x07
+			data[offset+2] = 0x00
+		} else {
+			timer24bit := encodeClimateTimer(r.Timers[i])
+			data[offset] = byte(timer24bit >> 16)
+			data[offset+1] = byte(timer24bit >> 8)
+			data[offset+2] = byte(timer24bit)
+		}
+	}
+	data[15] = 0x01 // Unknown last byte
+
+	return &PhevMessage{
+		Register: r.Register(),
+		Data:     data,
+	}
+}
+
+func (r *RegisterClimateTimer) Raw() string {
+	return hex.EncodeToString(r.raw)
+}
+
+func (r *RegisterClimateTimer) String() string {
+	enabled := 0
+	for _, timer := range r.Timers {
+		if timer.Enabled {
+			enabled++
+		}
+	}
+	return fmt.Sprintf("Climate Timers: %d enabled", enabled)
+}
+
+func (r *RegisterClimateTimer) Register() byte {
+	return ClimateTimerRegister
+}
+
+// Helper functions for climate timer encoding/decoding
+func decodeClimateTimer(timer24bit uint32) ClimateTimer {
+	timer := ClimateTimer{}
+
+	// Extract fields based on protocol documentation
+	timer.Duration = uint8((timer24bit & 0x03) + 1) * 10 // Bits 0-1: 0=10min, 1=20min, 2=30min
+
+	// Days (bits 2-8)
+	days := []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+	timer.Days = []string{}
+	for i, day := range days {
+		if (timer24bit >> (2 + i)) & 1 == 1 {
+			timer.Days = append(timer.Days, day)
+		}
+	}
+
+	// Minute (bits 9-11): 0=0, 1=10, 2=20, 3=30, 4=40, 5=50
+	minute := (timer24bit >> 9) & 0x07
+	timer.Minute = uint8(minute * 10)
+
+	// Hour (bits 12-16): 0=0, 1=1, ... 23=23
+	timer.Hour = uint8((timer24bit >> 12) & 0x1F)
+
+	// Enabled (bit 17)
+	timer.Enabled = (timer24bit >> 17) & 1 == 1
+
+	// Mode is not encoded in timer, defaults to "heat" (most common)
+	timer.Mode = "heat"
+
+	return timer
+}
+
+// EncodeClimateTimer encodes a ClimateTimer into the 24-bit format (exported for use in cmd package)
+func EncodeClimateTimer(timer ClimateTimer) uint32 {
+	return encodeClimateTimer(timer)
+}
+
+func encodeClimateTimer(timer ClimateTimer) uint32 {
+	var timer24bit uint32
+
+	// Duration (bits 0-1)
+	switch timer.Duration {
+	case 10:
+		timer24bit |= 0
+	case 20:
+		timer24bit |= 1
+	case 30:
+		timer24bit |= 2
+	}
+
+	// Days (bits 2-8)
+	dayMap := map[string]int{"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
+	for _, day := range timer.Days {
+		if idx, ok := dayMap[day]; ok {
+			timer24bit |= 1 << (2 + idx)
+		}
+	}
+
+	// Minute (bits 9-11)
+	timer24bit |= uint32(timer.Minute/10) << 9
+
+	// Hour (bits 12-16)
+	timer24bit |= uint32(timer.Hour) << 12
+
+	// Enabled (bit 17)
+	if timer.Enabled {
+		timer24bit |= 1 << 17
+	}
+
+	return timer24bit
 }

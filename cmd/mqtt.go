@@ -19,7 +19,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
 	"github.com/spf13/cobra"
@@ -380,6 +382,233 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 				return
 			}
 		}
+	} else if strings.HasPrefix(msg.Topic(), m.topic("/set/climate/timer/")) {
+		// Handle climate timer setting: /set/climate/timer/[1-5]
+		// Expected payload: JSON format
+		// Example: {"enabled":true,"hour":7,"minute":30,"mode":"heat","duration":20,"days":["mon","tue","wed","thu","fri"]}
+
+		parts := strings.Split(msg.Topic(), "/")
+		if len(parts) < 6 {
+			log.Errorf("Invalid climate timer topic: %s", msg.Topic())
+			return
+		}
+
+		timerIdStr := parts[len(parts)-1]
+		timerId, err := strconv.Atoi(timerIdStr)
+		if err != nil || timerId < 1 || timerId > 5 {
+			log.Errorf("Invalid timer ID: %s (must be 1-5)", timerIdStr)
+			return
+		}
+
+		// Parse JSON payload
+		var timerConfig protocol.ClimateTimer
+		if err := json.Unmarshal(msg.Payload(), &timerConfig); err != nil {
+			log.Errorf("Invalid JSON payload for climate timer: %v", err)
+			return
+		}
+
+		// Validate timer configuration
+		if timerConfig.Enabled {
+			if timerConfig.Hour > 23 || timerConfig.Minute > 50 || timerConfig.Minute%10 != 0 {
+				log.Errorf("Invalid time: %02d:%02d (hour 0-23, minute 0,10,20,30,40,50)", timerConfig.Hour, timerConfig.Minute)
+				return
+			}
+			if timerConfig.Duration != 10 && timerConfig.Duration != 20 && timerConfig.Duration != 30 {
+				log.Errorf("Invalid duration: %d (must be 10, 20, or 30 minutes)", timerConfig.Duration)
+				return
+			}
+			if timerConfig.Mode != "cool" && timerConfig.Mode != "heat" && timerConfig.Mode != "windscreen" {
+				log.Errorf("Invalid mode: %s (must be cool, heat, or windscreen)", timerConfig.Mode)
+				return
+			}
+		}
+
+		// Create climate timer register data
+		climateReg := &protocol.RegisterClimateTimer{}
+
+		// Set all timers to disabled first (we'll get current state in real implementation)
+		for i := 0; i < 5; i++ {
+			climateReg.Timers[i].Enabled = false
+		}
+
+		// Set the specific timer
+		climateReg.Timers[timerId-1] = timerConfig
+
+		// Send the timer setting
+		msg := climateReg.Encode()
+		msg.Type = protocol.CmdOutSend
+		msg.Register = protocol.SetClimateTimerRegister // Use 0x1a for setting
+
+		if err := m.phev.SetRegister(protocol.SetClimateTimerRegister, msg.Data); err != nil {
+			log.Errorf("Error setting climate timer %d: %v", timerId, err)
+			return
+		}
+
+		log.Infof("Climate timer %d set successfully", timerId)
+
+	} else if msg.Topic() == m.topic("/set/climate/timer/clear") {
+		// Clear all climate timers
+		clearData := make([]byte, 16)
+		clearData[0] = 0x00
+		for i := 1; i < 16; i += 3 {
+			clearData[i] = 0xfe
+			clearData[i+1] = 0x07
+			clearData[i+2] = 0x00
+		}
+		clearData[15] = 0x01
+
+		if err := m.phev.SetRegister(protocol.SetClimateTimerRegister, clearData); err != nil {
+			log.Errorf("Error clearing climate timers: %v", err)
+			return
+		}
+
+		log.Infof("All climate timers cleared")
+
+	} else if msg.Topic() == m.topic("/set/climate/start") {
+		// Start climate control immediately using timer system
+		// Expected payload: JSON format
+		// Example: {"mode":"heat","duration":20}
+		// This creates a "now" timer that activates immediately
+
+		var startConfig struct {
+			Mode     string `json:"mode"`
+			Duration uint8  `json:"duration"`
+		}
+
+		if err := json.Unmarshal(msg.Payload(), &startConfig); err != nil {
+			log.Errorf("Invalid JSON payload for climate start: %v", err)
+			return
+		}
+
+		// Validate configuration
+		if startConfig.Mode != "cool" && startConfig.Mode != "heat" && startConfig.Mode != "windscreen" {
+			log.Errorf("Invalid mode: %s (must be cool, heat, or windscreen)", startConfig.Mode)
+			return
+		}
+		if startConfig.Duration != 10 && startConfig.Duration != 20 && startConfig.Duration != 30 {
+			log.Errorf("Invalid duration: %d (must be 10, 20, or 30 minutes)", startConfig.Duration)
+			return
+		}
+
+		// Create immediate timer - use current time
+		now := time.Now()
+		immediateTimer := protocol.ClimateTimer{
+			Enabled:  true,
+			Hour:     uint8(now.Hour()),
+			Minute:   uint8((now.Minute()/10)*10), // Round to nearest 10 minutes
+			Mode:     startConfig.Mode,
+			Duration: startConfig.Duration,
+			Days:     []string{}, // Empty days means "now"
+		}
+
+		// Create timer register with immediate activation
+		climateReg := &protocol.RegisterClimateTimer{}
+		// Set all timers to disabled first
+		for i := 0; i < 5; i++ {
+			climateReg.Timers[i].Enabled = false
+		}
+
+		// Use timer slot 1 for immediate activation
+		climateReg.Timers[0] = immediateTimer
+
+		// Send the immediate timer
+		msg := climateReg.Encode()
+		if err := m.phev.SetRegister(protocol.SetClimateTimerRegister, msg.Data); err != nil {
+			log.Errorf("Error starting immediate climate control: %v", err)
+			return
+		}
+
+		log.Infof("Climate control started immediately: %s for %d minutes", startConfig.Mode, startConfig.Duration)
+
+	} else if msg.Topic() == m.topic("/set/climate/stop") {
+		// Stop climate control immediately
+		// This sends the termination/reset command
+
+		if err := m.phev.SetRegister(protocol.SetAckPreACTermRegister, []byte{0x1}); err != nil {
+			log.Errorf("Error stopping climate control: %v", err)
+			return
+		}
+
+		log.Infof("Climate control stopped")
+
+	} else if msg.Topic() == m.topic("/set/climate/now") {
+		// Direct immediate climate control (alternative method)
+		// Expected payload: "heat:20", "cool:10", "windscreen:30", "off"
+
+		payload := strings.ToLower(string(msg.Payload()))
+
+		if payload == "off" {
+			// Stop climate control
+			if err := m.phev.SetRegister(protocol.SetAckPreACTermRegister, []byte{0x1}); err != nil {
+				log.Errorf("Error stopping climate control: %v", err)
+				return
+			}
+			log.Infof("Climate control turned off")
+			return
+		}
+
+		parts := strings.Split(payload, ":")
+		if len(parts) != 2 {
+			log.Errorf("Invalid payload format. Expected 'mode:duration' (e.g., 'heat:20') or 'off'")
+			return
+		}
+
+		mode := parts[0]
+		durationStr := parts[1]
+
+		// Validate mode
+		modeMap := map[string]byte{"cool": 0x1, "heat": 0x2, "windscreen": 0x3}
+		modeCode, ok := modeMap[mode]
+		if !ok {
+			log.Errorf("Invalid mode: %s (must be cool, heat, or windscreen)", mode)
+			return
+		}
+
+		// Validate duration
+		durMap := map[string]byte{"10": 0x0, "20": 0x1, "30": 0x2}
+		durationCode, ok := durMap[durationStr]
+		if !ok {
+			log.Errorf("Invalid duration: %s (must be 10, 20, or 30)", durationStr)
+			return
+		}
+
+		// Use the enhanced MY2014 approach for immediate activation
+		if m.phev.ModelYear == client.ModelYear14 {
+			// Use register 0x05 approach for MY2014
+			timerPayload := make([]byte, 16)
+			timerPayload[0] = 0x01  // Enable immediate
+			timerPayload[1] = modeCode | (durationCode << 4)  // Mode and duration combined
+			// Set current time for immediate activation
+			now := time.Now()
+			// Encode immediate timer in first timer slot (bytes 1-3)
+			immediateTimer := protocol.ClimateTimer{
+				Enabled:  true,
+				Hour:     uint8(now.Hour()),
+				Minute:   uint8((now.Minute()/10)*10),
+				Mode:     mode,
+				Duration: uint8((durationCode + 1) * 10),
+				Days:     []string{}, // No repeat days for immediate activation
+			}
+			timer24bit := protocol.EncodeClimateTimer(immediateTimer)
+			timerPayload[1] = byte(timer24bit >> 16)
+			timerPayload[2] = byte(timer24bit >> 8)
+			timerPayload[3] = byte(timer24bit)
+
+			if err := m.phev.SetRegister(0x05, timerPayload); err != nil {
+				log.Errorf("Error starting immediate climate (MY2014): %v", err)
+				return
+			}
+		} else {
+			// Use register 0x1b for MY18+
+			state := byte(0x02)
+			if err := m.phev.SetRegister(protocol.SetACModeRegisterMY18, []byte{state, modeCode, durationCode, 0x0}); err != nil {
+				log.Errorf("Error starting immediate climate: %v", err)
+				return
+			}
+		}
+
+		log.Infof("Climate control started: %s for %s minutes", mode, durationStr)
+
 	} else if msg.Topic() == m.topic("/settings/dump") {
 		log.Infof("CURRENT_SETTINGS:")
 		log.Infof("\n%s", m.phev.Settings.Dump())
@@ -478,6 +707,16 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 		m.climate.setMode(reg.Mode)
 		for t, p := range m.climate.mqttStates() {
 			m.publish(t, p)
+		}
+	case *protocol.RegisterClimateTimer:
+		// Publish climate timer status
+		for i, timer := range reg.Timers {
+			timerJSON, err := json.Marshal(timer)
+			if err != nil {
+				log.Errorf("Error marshaling climate timer %d: %v", i+1, err)
+				continue
+			}
+			m.publish(fmt.Sprintf("/climate/timer/%d", i+1), string(timerJSON))
 		}
 	case *protocol.RegisterPreACState:
 		m.climate.setState(reg.State)
