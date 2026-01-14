@@ -1067,6 +1067,21 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 			log.Errorf("Invalid GPS command: %s (must be 'on' or 'off')", payload)
 		}
 
+	} else if msg.Topic() == m.topic("/set/system/reboot") {
+		// Reboot the Raspberry Pi
+		log.Warnf("Reboot requested via MQTT, rebooting system in 5 seconds...")
+		m.publish("/system/status", "rebooting")
+
+		// Use a goroutine to allow the MQTT message to be sent before rebooting
+		go func() {
+			time.Sleep(5 * time.Second)
+			cmd := exec.Command("sudo", "reboot")
+			if err := cmd.Run(); err != nil {
+				log.Errorf("Failed to reboot: %v", err)
+				m.publish("/system/status", "reboot_failed")
+			}
+		}()
+
 	} else if msg.Topic() == m.topic("/settings/dump") {
 		log.Infof("CURRENT_SETTINGS:")
 		log.Infof("\n%s", m.phev.Settings.Dump())
@@ -1738,6 +1753,20 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		"payload_press": "restart",
 		"avty_t": "~/available",
 		"unique_id": "__VIN___restart_wifi",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/button/%s_system_reboot/config": `{
+		"name": "__NAME__ Reboot System",
+		"icon": "mdi:restart",
+		"command_topic": "~/set/system/reboot",
+		"payload_press": "",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___system_reboot",
 		"dev": {
 			"name": "PHEV __VIN__",
 			"identifiers": ["phev-__VIN__"],
