@@ -17,18 +17,24 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
+	"github.com/adrianmo/go-nmea"
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/tarm/serial"
 	"os/exec"
 	"strings"
 	"time"
@@ -255,6 +261,223 @@ func collectSystemMetrics() *systemMetrics {
 	return metrics
 }
 
+// GPS location data
+type gpsLocation struct {
+	mu                sync.RWMutex
+	latitude          float64
+	longitude         float64
+	altitude          float64
+	speed             float64 // km/h
+	heading           float64 // degrees
+	satellites        int
+	fixQuality        int
+	lastUpdate        time.Time
+	lastPublish       time.Time
+	enabled           bool
+	moving            bool
+	lastMovementCheck time.Time
+}
+
+func (g *gpsLocation) update(lat, lon, alt, speed, heading float64, sats, quality int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.latitude = lat
+	g.longitude = lon
+	g.altitude = alt
+	g.speed = speed
+	g.heading = heading
+	g.satellites = sats
+	g.fixQuality = quality
+	g.lastUpdate = time.Now()
+
+	// Determine if moving (speed > 10 km/h)
+	g.moving = speed > 10.0
+}
+
+func (g *gpsLocation) shouldPublish() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	if !g.enabled || g.fixQuality == 0 {
+		return false
+	}
+
+	now := time.Now()
+
+	// If moving, publish every 3-5 seconds
+	if g.moving {
+		return now.Sub(g.lastPublish) >= 3*time.Second
+	}
+
+	// If stationary, publish every 5 minutes
+	return now.Sub(g.lastPublish) >= 5*time.Minute
+}
+
+func (g *gpsLocation) hasMoved(newLat, newLon float64) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	// Calculate distance in meters using Haversine formula
+	distance := haversineDistance(g.latitude, g.longitude, newLat, newLon)
+
+	// If moved more than 100 meters, trigger update
+	return distance > 100.0
+}
+
+func (g *gpsLocation) getData() map[string]interface{} {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	return map[string]interface{}{
+		"latitude":    g.latitude,
+		"longitude":   g.longitude,
+		"altitude":    g.altitude,
+		"speed":       g.speed,
+		"heading":     g.heading,
+		"satellites":  g.satellites,
+		"fix_quality": g.fixQuality,
+		"timestamp":   g.lastUpdate.Unix(),
+	}
+}
+
+func (g *gpsLocation) markPublished() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.lastPublish = time.Now()
+}
+
+func (g *gpsLocation) setEnabled(enabled bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.enabled = enabled
+}
+
+func (g *gpsLocation) isEnabled() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.enabled
+}
+
+// haversineDistance calculates the distance between two GPS coordinates in meters
+func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
+	const earthRadius = 6371000.0 // Earth radius in meters
+
+	// Convert to radians
+	lat1Rad := lat1 * math.Pi / 180
+	lat2Rad := lat2 * math.Pi / 180
+	deltaLat := (lat2 - lat1) * math.Pi / 180
+	deltaLon := (lon2 - lon1) * math.Pi / 180
+
+	a := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) +
+		math.Cos(lat1Rad)*math.Cos(lat2Rad)*
+			math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+
+	return earthRadius * c
+}
+
+// openGPSSerial attempts to open GPS serial port
+func openGPSSerial() (io.ReadWriteCloser, error) {
+	ports := []string{"/dev/ttyUSB0", "/dev/ttyACM0"}
+
+	for _, port := range ports {
+		cfg := &serial.Config{
+			Name: port,
+			Baud: 9600,
+		}
+
+		s, err := serial.OpenPort(cfg)
+		if err == nil {
+			log.Infof("GPS connected on %s", port)
+			return s, nil
+		}
+	}
+
+	return nil, fmt.Errorf("could not open GPS on any port")
+}
+
+// readGPS reads NMEA sentences from GPS and updates location
+func (m *mqttClient) readGPS(gps *gpsLocation) {
+	for {
+		if !gps.isEnabled() {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		port, err := openGPSSerial()
+		if err != nil {
+			log.Errorf("Failed to open GPS: %v", err)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		log.Infof("GPS reader started")
+		scanner := bufio.NewScanner(port)
+
+		for scanner.Scan() {
+			if !gps.isEnabled() {
+				port.Close()
+				break
+			}
+
+			line := scanner.Text()
+
+			// Parse NMEA sentence
+			s, err := nmea.Parse(line)
+			if err != nil {
+				continue
+			}
+
+			switch msg := s.(type) {
+			case nmea.RMC:
+				// RMC contains position, speed, and course
+				if msg.Validity == "A" { // Valid fix
+					lat := msg.Latitude
+					lon := msg.Longitude
+					speed := msg.Speed * 1.852 // Convert knots to km/h
+					heading := msg.Course
+
+					// Check if moved significantly
+					if gps.hasMoved(lat, lon) || gps.shouldPublish() {
+						// Get altitude and satellites from last GGA
+						data := gps.getData()
+						alt := data["altitude"].(float64)
+						sats := data["satellites"].(int)
+						quality := data["fix_quality"].(int)
+
+						gps.update(lat, lon, alt, speed, heading, sats, quality)
+
+						if gps.shouldPublish() {
+							m.publishGPS(gps)
+							gps.markPublished()
+						}
+					}
+				}
+
+			case nmea.GGA:
+				// GGA contains altitude and satellite info
+				if msg.FixQuality != "0" {
+					gps.mu.Lock()
+					gps.altitude = msg.Altitude
+					gps.satellites = int(msg.NumSatellites)
+					qual, _ := strconv.Atoi(msg.FixQuality)
+					gps.fixQuality = qual
+					gps.mu.Unlock()
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			log.Errorf("GPS scanner error: %v", err)
+		}
+
+		port.Close()
+		log.Infof("GPS reader stopped, reconnecting in 10s...")
+		time.Sleep(10 * time.Second)
+	}
+}
+
 var lastWifiRestart time.Time
 
 func restartWifi(cmd *cobra.Command) error {
@@ -301,6 +524,7 @@ type mqttClient struct {
 	haPublishedDiscovery	bool
 
 	climate *climate
+	gps     *gpsLocation
 	enabled bool
 }
 
@@ -358,6 +582,15 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	m.mqttData = map[string]string{}
+
+	// Initialize GPS
+	m.gps = &gpsLocation{
+		enabled: false, // Disabled by default, enable via MQTT
+	}
+
+	// Start GPS reader in background
+	go m.readGPS(m.gps)
+	log.Infof("GPS reader initialized (disabled by default, enable via MQTT /set/gps)")
 
 	for {
 		if m.enabled {
@@ -418,6 +651,35 @@ func (m *mqttClient) publishSystemMetrics() {
 	if metrics.UptimeSeconds > 0 {
 		m.publish("/system/uptime", fmt.Sprintf("%d", metrics.UptimeSeconds))
 	}
+}
+
+func (m *mqttClient) publishGPS(gps *gpsLocation) {
+	data := gps.getData()
+
+	// Publish individual GPS data
+	m.publish("/gps/latitude", fmt.Sprintf("%.6f", data["latitude"].(float64)))
+	m.publish("/gps/longitude", fmt.Sprintf("%.6f", data["longitude"].(float64)))
+	m.publish("/gps/altitude", fmt.Sprintf("%.1f", data["altitude"].(float64)))
+	m.publish("/gps/speed", fmt.Sprintf("%.1f", data["speed"].(float64)))
+	m.publish("/gps/heading", fmt.Sprintf("%.1f", data["heading"].(float64)))
+	m.publish("/gps/satellites", fmt.Sprintf("%d", data["satellites"].(int)))
+	m.publish("/gps/fix_quality", fmt.Sprintf("%d", data["fix_quality"].(int)))
+
+	// Publish combined location for device_tracker (HA format)
+	locationJSON := fmt.Sprintf(`{"latitude":%.6f,"longitude":%.6f,"gps_accuracy":10,"speed":%.1f,"altitude":%.1f,"course":%.1f}`,
+		data["latitude"].(float64),
+		data["longitude"].(float64),
+		data["speed"].(float64),
+		data["altitude"].(float64),
+		data["heading"].(float64))
+
+	m.publish("/gps/location", locationJSON)
+
+	log.Debugf("GPS published: lat=%.6f lon=%.6f speed=%.1f km/h sats=%d",
+		data["latitude"].(float64),
+		data["longitude"].(float64),
+		data["speed"].(float64),
+		data["satellites"].(int))
 }
 
 func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Message) {
@@ -788,6 +1050,22 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 		}
 
 		log.Infof("Climate control started: %s for %s minutes", mode, durationStr)
+
+	} else if msg.Topic() == m.topic("/set/gps") {
+		// Enable/disable GPS tracking
+		payload := strings.ToLower(string(msg.Payload()))
+
+		if payload == "on" {
+			m.gps.setEnabled(true)
+			log.Infof("GPS tracking enabled")
+			m.publish("/gps/status", "on")
+		} else if payload == "off" {
+			m.gps.setEnabled(false)
+			log.Infof("GPS tracking disabled")
+			m.publish("/gps/status", "off")
+		} else {
+			log.Errorf("Invalid GPS command: %s (must be 'on' or 'off')", payload)
+		}
 
 	} else if msg.Topic() == m.topic("/settings/dump") {
 		log.Infof("CURRENT_SETTINGS:")
@@ -1538,6 +1816,84 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		"device_class": "duration",
 		"avty_t": "~/available",
 		"unique_id": "__VIN___system_uptime",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		// GPS tracking
+		"%s/device_tracker/%s_gps/config": `{
+		"name": "__NAME__ Location",
+		"icon": "mdi:car",
+		"json_attributes_topic": "~/gps/location",
+		"state_topic": "~/gps/location",
+		"value_template": "home",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___gps_location",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/switch/%s_gps_enable/config": `{
+		"name": "__NAME__ GPS Tracking",
+		"icon": "mdi:map-marker",
+		"state_topic": "~/gps/status",
+		"command_topic": "~/set/gps",
+		"payload_on": "on",
+		"payload_off": "off",
+		"state_on": "on",
+		"state_off": "off",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___gps_enable",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_gps_speed/config": `{
+		"name": "__NAME__ Speed",
+		"icon": "mdi:speedometer",
+		"state_topic": "~/gps/speed",
+		"unit_of_measurement": "km/h",
+		"state_class": "measurement",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___gps_speed",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_gps_altitude/config": `{
+		"name": "__NAME__ Altitude",
+		"icon": "mdi:elevation-rise",
+		"state_topic": "~/gps/altitude",
+		"unit_of_measurement": "m",
+		"state_class": "measurement",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___gps_altitude",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_gps_satellites/config": `{
+		"name": "__NAME__ GPS Satellites",
+		"icon": "mdi:satellite-variant",
+		"state_topic": "~/gps/satellites",
+		"state_class": "measurement",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___gps_satellites",
 		"dev": {
 			"name": "PHEV __VIN__",
 			"identifiers": ["phev-__VIN__"],

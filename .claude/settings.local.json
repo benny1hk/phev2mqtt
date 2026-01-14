@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./phev2mqtt client climate timer:*)",
+      "Bash(go build:*)",
+      "Bash(./phev2mqtt client:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd comprehensive CLI for all PHEV controls\n\nImplements command-line interface for all MQTT control functions:\n\nClimate Control \\(cmd/climate.go\\):\n- Immediate start/stop \\(heat/cool/windscreen with duration\\)\n- Timer management \\(set, clear, list for 5 timers\\)\n- MY2014/2015 and MY2018+ model support\n\nLights Control \\(cmd/lights.go\\):\n- Parking lights on/off\n- Headlights on/off\n\nCharging Control \\(cmd/charging.go\\):\n- Cancel charge timer command\n\nVehicle Status \\(cmd/status.go\\):\n- Complete status display with formatted output\n- Shows battery, charging, doors, lights, climate state\n\nDocumentation:\n- CLI_GUIDE.md: Complete reference with examples\n- CLIMATE_CLI.md: Detailed climate control guide with MQTT equivalents\n\nAll commands include:\n- Help text and examples\n- Global flags \\(--address, -v, -t, -s\\)\n- Input validation\n- Proper error handling\n\nExamples:\n  phev2mqtt client climate start heat 20\n  phev2mqtt client lights parking on\n  phev2mqtt client charging cancel-timer\n  phev2mqtt client status\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Skill(ralph-loop:ralph-loop)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}
