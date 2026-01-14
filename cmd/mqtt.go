@@ -21,7 +21,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"runtime"
 	"strconv"
+	"syscall"
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
 	"github.com/spf13/cobra"
@@ -102,6 +105,154 @@ func (c *climate) mqttStates() map[string]string {
 		m["/climate/windscreen"] = "on"
 	}
 	return m
+}
+
+// System metrics for Raspberry Pi monitoring
+type systemMetrics struct {
+	CPUTemp       float64 // CPU temperature in Celsius
+	MemoryPercent float64 // Memory usage percentage
+	CPULoad       float64 // CPU load average (1 minute)
+	DiskPercent   float64 // Disk usage percentage
+	UptimeSeconds int64   // System uptime in seconds
+}
+
+// getCPUTemperature reads the SoC temperature from thermal_zone0
+func getCPUTemperature() (float64, error) {
+	data, err := os.ReadFile("/sys/class/thermal/thermal_zone0/temp")
+	if err != nil {
+		return 0, err
+	}
+	tempStr := strings.TrimSpace(string(data))
+	tempMilliC, err := strconv.ParseInt(tempStr, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	// Convert from millidegrees to degrees Celsius
+	return float64(tempMilliC) / 1000.0, nil
+}
+
+// getMemoryUsage reads memory statistics from /proc/meminfo
+func getMemoryUsage() (float64, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+
+	var memTotal, memAvailable int64
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "MemTotal:":
+			memTotal, _ = strconv.ParseInt(fields[1], 10, 64)
+		case "MemAvailable:":
+			memAvailable, _ = strconv.ParseInt(fields[1], 10, 64)
+		}
+	}
+
+	if memTotal == 0 {
+		return 0, fmt.Errorf("could not read total memory")
+	}
+
+	memUsed := memTotal - memAvailable
+	return float64(memUsed) / float64(memTotal) * 100.0, nil
+}
+
+// getCPULoad reads the 1-minute load average
+func getCPULoad() (float64, error) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, err
+	}
+
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return 0, fmt.Errorf("could not parse loadavg")
+	}
+
+	load, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, err
+	}
+
+	// Normalize by number of CPUs to get percentage
+	numCPU := float64(runtime.NumCPU())
+	return (load / numCPU) * 100.0, nil
+}
+
+// getDiskUsage gets the disk usage percentage for root filesystem
+func getDiskUsage() (float64, error) {
+	var stat syscall.Statfs_t
+	err := syscall.Statfs("/", &stat)
+	if err != nil {
+		return 0, err
+	}
+
+	total := stat.Blocks * uint64(stat.Bsize)
+	free := stat.Bfree * uint64(stat.Bsize)
+	used := total - free
+
+	return float64(used) / float64(total) * 100.0, nil
+}
+
+// getUptime reads system uptime from /proc/uptime
+func getUptime() (int64, error) {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return 0, fmt.Errorf("could not parse uptime")
+	}
+
+	uptime, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return int64(uptime), nil
+}
+
+// collectSystemMetrics gathers all system metrics
+func collectSystemMetrics() *systemMetrics {
+	metrics := &systemMetrics{}
+
+	if temp, err := getCPUTemperature(); err == nil {
+		metrics.CPUTemp = temp
+	} else {
+		log.Debugf("Could not read CPU temperature: %v", err)
+	}
+
+	if mem, err := getMemoryUsage(); err == nil {
+		metrics.MemoryPercent = mem
+	} else {
+		log.Debugf("Could not read memory usage: %v", err)
+	}
+
+	if load, err := getCPULoad(); err == nil {
+		metrics.CPULoad = load
+	} else {
+		log.Debugf("Could not read CPU load: %v", err)
+	}
+
+	if disk, err := getDiskUsage(); err == nil {
+		metrics.DiskPercent = disk
+	} else {
+		log.Debugf("Could not read disk usage: %v", err)
+	}
+
+	if uptime, err := getUptime(); err == nil {
+		metrics.UptimeSeconds = uptime
+	} else {
+		log.Debugf("Could not read uptime: %v", err)
+	}
+
+	return metrics
 }
 
 var lastWifiRestart time.Time
@@ -238,6 +389,35 @@ func (m *mqttClient) publish(topic, payload string) {
 		m.client.Publish(m.topic(topic), 0, false, payload)
 		m.mqttData[topic] = payload
 //	}
+}
+
+func (m *mqttClient) publishSystemMetrics() {
+	metrics := collectSystemMetrics()
+
+	// Publish CPU temperature
+	if metrics.CPUTemp > 0 {
+		m.publish("/system/cpu_temp", fmt.Sprintf("%.1f", metrics.CPUTemp))
+	}
+
+	// Publish memory usage
+	if metrics.MemoryPercent > 0 {
+		m.publish("/system/memory_percent", fmt.Sprintf("%.1f", metrics.MemoryPercent))
+	}
+
+	// Publish CPU load
+	if metrics.CPULoad >= 0 {
+		m.publish("/system/cpu_load", fmt.Sprintf("%.1f", metrics.CPULoad))
+	}
+
+	// Publish disk usage
+	if metrics.DiskPercent > 0 {
+		m.publish("/system/disk_percent", fmt.Sprintf("%.1f", metrics.DiskPercent))
+	}
+
+	// Publish uptime
+	if metrics.UptimeSeconds > 0 {
+		m.publish("/system/uptime", fmt.Sprintf("%d", metrics.UptimeSeconds))
+	}
 }
 
 func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Message) {
@@ -649,6 +829,8 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 		select {
 		case <-updaterTicker.C:
 			m.phev.SetRegister(0x6, []byte{0x3})
+			// Collect and publish system metrics
+			m.publishSystemMetrics()
 		case msg, ok := <-m.phev.Recv:
 			if !ok {
 				log.Infof("Connection closed.")
@@ -1278,6 +1460,84 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		"payload_press": "restart",
 		"avty_t": "~/available",
 		"unique_id": "__VIN___restart_wifi",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		// System monitoring
+		"%s/sensor/%s_system_cpu_temp/config": `{
+		"name": "__NAME__ CPU Temperature",
+		"icon": "mdi:thermometer",
+		"device_class": "temperature",
+		"state_topic": "~/system/cpu_temp",
+		"unit_of_measurement": "°C",
+		"state_class": "measurement",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___system_cpu_temp",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_system_memory/config": `{
+		"name": "__NAME__ Memory Usage",
+		"icon": "mdi:memory",
+		"state_topic": "~/system/memory_percent",
+		"unit_of_measurement": "%",
+		"state_class": "measurement",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___system_memory",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_system_cpu_load/config": `{
+		"name": "__NAME__ CPU Load",
+		"icon": "mdi:chip",
+		"state_topic": "~/system/cpu_load",
+		"unit_of_measurement": "%",
+		"state_class": "measurement",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___system_cpu_load",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_system_disk/config": `{
+		"name": "__NAME__ Disk Usage",
+		"icon": "mdi:harddisk",
+		"state_topic": "~/system/disk_percent",
+		"unit_of_measurement": "%",
+		"state_class": "measurement",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___system_disk",
+		"dev": {
+			"name": "PHEV __VIN__",
+			"identifiers": ["phev-__VIN__"],
+			"manufacturer": "Mitsubishi",
+			"model": "Outlander PHEV"
+		},
+		"~": "__TOPIC__"}`,
+		"%s/sensor/%s_system_uptime/config": `{
+		"name": "__NAME__ Uptime",
+		"icon": "mdi:clock-outline",
+		"state_topic": "~/system/uptime",
+		"unit_of_measurement": "s",
+		"state_class": "total_increasing",
+		"device_class": "duration",
+		"avty_t": "~/available",
+		"unique_id": "__VIN___system_uptime",
 		"dev": {
 			"name": "PHEV __VIN__",
 			"identifiers": ["phev-__VIN__"],
