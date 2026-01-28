@@ -517,6 +517,14 @@ type mqttClient struct {
 	lastConnect time.Time
 	lastError   error
 
+	// MQTT connection state tracking
+	mqttConnected         bool
+	mqttLastConnect       time.Time
+	mqttLastDisconnect    time.Time
+	mqttConnectMutex      sync.RWMutex
+	mqttInitialRetryDelay time.Duration
+	mqttMaxRetryDelay     time.Duration
+
 	prefix string
 
 	haDiscovery		bool
@@ -532,6 +540,43 @@ func (m *mqttClient) topic(topic string) string {
 	return fmt.Sprintf("%s%s", m.prefix, topic)
 }
 
+// handleMQTTConnectionLost is called when MQTT connection is lost
+func (m *mqttClient) handleMQTTConnectionLost(client mqtt.Client, err error) {
+	m.mqttConnectMutex.Lock()
+	m.mqttConnected = false
+	m.mqttLastDisconnect = time.Now()
+	m.mqttConnectMutex.Unlock()
+
+	log.Errorf("MQTT connection lost: %v", err)
+
+	m.mqttConnectMutex.RLock()
+	if !m.mqttLastConnect.IsZero() {
+		duration := m.mqttLastDisconnect.Sub(m.mqttLastConnect)
+		log.Infof("MQTT was connected for %s", duration.Round(time.Second))
+	}
+	m.mqttConnectMutex.RUnlock()
+}
+
+// handleMQTTConnect is called when MQTT successfully connects/reconnects
+func (m *mqttClient) handleMQTTConnect(client mqtt.Client) {
+	m.mqttConnectMutex.Lock()
+	wasDisconnected := !m.mqttConnected
+	m.mqttConnected = true
+	m.mqttLastConnect = time.Now()
+	m.mqttConnectMutex.Unlock()
+
+	if wasDisconnected && !m.mqttLastDisconnect.IsZero() {
+		disconnectDuration := m.mqttLastConnect.Sub(m.mqttLastDisconnect)
+		log.Infof("MQTT reconnected successfully after %s", disconnectDuration.Round(time.Second))
+	} else {
+		log.Infof("MQTT connected successfully")
+	}
+
+	// Re-publish availability status when reconnected
+	m.publishAvailabilityStatus()
+}
+
+
 func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	m.enabled = true // Default.
 
@@ -543,6 +588,8 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	m.haDiscovery		 = viper.GetBool("ha_discovery")
 	m.haDiscoveryPrefix	 = viper.GetString("ha_discovery_prefix")
 	m.updateInterval	 = viper.GetDuration("update_interval")
+	m.mqttInitialRetryDelay	 = viper.GetDuration("mqtt_initial_retry_delay")
+	m.mqttMaxRetryDelay	 = viper.GetDuration("mqtt_max_retry_delay")
 	wifiRestartTime		:= viper.GetDuration("wifi_restart_time")
 	restartCommand		:= viper.GetString("wifi_restart_command")
 
@@ -560,11 +607,37 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 		SetPassword(mqttPassword).
 		SetAutoReconnect(true).
 		SetDefaultPublishHandler(m.handleIncomingMqtt).
-		SetWill(m.topic("/available"), "offline", 0, true)
+		SetWill(m.topic("/available"), "offline", 0, true).
+		SetConnectionLostHandler(m.handleMQTTConnectionLost).
+		SetOnConnectHandler(m.handleMQTTConnect)
 
 	m.client = mqtt.NewClient(m.options)
-	if token := m.client.Connect(); token.Wait() && token.Error() != nil {
-		return token.Error()
+
+	// Initial MQTT connection with exponential backoff (similar to GPS pattern)
+	retryDelay := m.mqttInitialRetryDelay
+	for {
+		log.Infof("Attempting MQTT connection to %s...", mqttServer)
+
+		token := m.client.Connect()
+		token.Wait()
+
+		if token.Error() == nil {
+			log.Infof("MQTT connected successfully")
+			m.mqttConnectMutex.Lock()
+			m.mqttConnected = true
+			m.mqttLastConnect = time.Now()
+			m.mqttConnectMutex.Unlock()
+			break
+		}
+
+		log.Errorf("MQTT connection failed: %v. Retrying in %s...", token.Error(), retryDelay)
+		time.Sleep(retryDelay)
+
+		// Exponential backoff: double delay, cap at max
+		retryDelay *= 2
+		if retryDelay > m.mqttMaxRetryDelay {
+			retryDelay = m.mqttMaxRetryDelay
+		}
 	}
 
 	if !mqttDisableSet {
@@ -583,14 +656,28 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 
 	m.mqttData = map[string]string{}
 
-	// Initialize GPS
+	// Initialize GPS - state will be retrieved from MQTT retained message
 	m.gps = &gpsLocation{
-		enabled: false, // Disabled by default, enable via MQTT
+		enabled: false, // Default to false if no retained state exists
+	}
+
+	// Subscribe to GPS status topic to retrieve last known state
+	if token := m.client.Subscribe(m.topic("/gps/status"), 0, func(client mqtt.Client, msg mqtt.Message) {
+		payload := strings.ToLower(string(msg.Payload()))
+		if payload == "on" {
+			m.gps.setEnabled(true)
+			log.Infof("GPS tracking restored to enabled state from MQTT")
+		} else if payload == "off" {
+			m.gps.setEnabled(false)
+			log.Infof("GPS tracking restored to disabled state from MQTT")
+		}
+	}); token.Wait() && token.Error() != nil {
+		log.Warnf("Failed to subscribe to GPS status: %v", token.Error())
 	}
 
 	// Start GPS reader in background
 	go m.readGPS(m.gps)
-	log.Infof("GPS reader initialized (disabled by default, enable via MQTT /set/gps)")
+	log.Infof("GPS reader initialized (state retrieved from MQTT, default off if unknown)")
 
 	for {
 		if m.enabled {
@@ -603,7 +690,7 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 			}
 			// Publish as offline if last connection was >30s ago.
 			if time.Now().Sub(m.lastConnect) > 30*time.Second {
-				m.client.Publish(m.topic("/available"), 0, true, "offline")
+				m.publishAvailabilityStatus()
 			}
 			// Restart Wifi interface if > wifi_restart_time.
 			if wifiRestartTime > 0 && time.Now().Sub(m.lastConnect) > wifiRestartTime {
@@ -617,11 +704,37 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// publishSafe publishes to MQTT with connection state awareness
+func (m *mqttClient) publishSafe(topic, payload string, qos byte, retained bool) {
+	m.mqttConnectMutex.RLock()
+	connected := m.mqttConnected
+	m.mqttConnectMutex.RUnlock()
+
+	if !connected {
+		log.Debugf("MQTT disconnected, skipping publish to %s (will retry when reconnected)", topic)
+		return
+	}
+
+	token := m.client.Publish(m.topic(topic), qos, retained, payload)
+
+	// For QoS > 0, check for errors
+	if qos > 0 && token.Wait() && token.Error() != nil {
+		log.Warnf("Failed to publish to %s: %v", topic, token.Error())
+	}
+}
+
+// publishAvailabilityStatus publishes current availability based on PHEV connection
+func (m *mqttClient) publishAvailabilityStatus() {
+	status := "offline"
+	if time.Now().Sub(m.lastConnect) <= 30*time.Second {
+		status = "online"
+	}
+	m.publishSafe("/available", status, 0, true)
+}
+
 func (m *mqttClient) publish(topic, payload string) {
-//	if cache := m.mqttData[topic]; cache != payload {
-		m.client.Publish(m.topic(topic), 0, false, payload)
-		m.mqttData[topic] = payload
-//	}
+	m.publishSafe(topic, payload, 0, false)
+	m.mqttData[topic] = payload
 }
 
 func (m *mqttClient) publishSystemMetrics() {
@@ -711,12 +824,12 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 		case "off":
 			m.enabled = false
 			m.phev.Close()
-			m.client.Publish(m.topic("/available"), 0, true, "offline")
+			m.publishAvailabilityStatus()
 		case "on":
 			m.enabled = true
 		case "restart":
 			m.enabled = true
-			m.client.Publish(m.topic("/available"), 0, true, "offline")
+			m.publishAvailabilityStatus()
 			m.phev.Close()
 		}
 	} else if msg.Topic() == m.topic("/set/parkinglights") {
@@ -1058,11 +1171,11 @@ func (m *mqttClient) handleIncomingMqtt(mqtt_client mqtt.Client, msg mqtt.Messag
 		if payload == "on" {
 			m.gps.setEnabled(true)
 			log.Infof("GPS tracking enabled")
-			m.publish("/gps/status", "on")
+			m.publishSafe("/gps/status", "on", 0, true) // Retained message
 		} else if payload == "off" {
 			m.gps.setEnabled(false)
 			log.Infof("GPS tracking disabled")
-			m.publish("/gps/status", "off")
+			m.publishSafe("/gps/status", "off", 0, true) // Retained message
 		} else {
 			log.Errorf("Invalid GPS command: %s (must be 'on' or 'off')", payload)
 		}
@@ -1106,7 +1219,7 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	if err := m.phev.Start(); err != nil {
 		return err
 	}
-	m.client.Publish(m.topic("/available"), 0, true, "online")
+	m.publishAvailabilityStatus()
 
 	m.lastError = nil
 
@@ -1971,6 +2084,8 @@ func init() {
 	mqttCmd.Flags().Duration("wifi_restart_time", 0, "Attempt to restart Wifi if no connection for this long")
 	mqttCmd.Flags().Duration("wifi_restart_retry_time", 2*time.Minute, "Interval to attempt Wifi restart")
 	mqttCmd.Flags().String("wifi_restart_command", defaultWifiRestartCmd, "Command to restart Wifi connection to Phev")
+	mqttCmd.Flags().Duration("mqtt_initial_retry_delay", 1*time.Second, "Initial delay before retrying MQTT connection")
+	mqttCmd.Flags().Duration("mqtt_max_retry_delay", 60*time.Second, "Maximum delay between MQTT connection retries")
 
 	viper.BindPFlag("mqtt_server", mqttCmd.Flags().Lookup("mqtt_server"))
 	viper.BindPFlag("mqtt_username", mqttCmd.Flags().Lookup("mqtt_username"))
@@ -1983,4 +2098,6 @@ func init() {
 	viper.BindPFlag("wifi_restart_time", mqttCmd.Flags().Lookup("wifi_restart_time"))
 	viper.BindPFlag("wifi_restart_retry_time", mqttCmd.Flags().Lookup("wifi_restart_retry_time"))
 	viper.BindPFlag("wifi_restart_command", mqttCmd.Flags().Lookup("wifi_restart_command"))
+	viper.BindPFlag("mqtt_initial_retry_delay", mqttCmd.Flags().Lookup("mqtt_initial_retry_delay"))
+	viper.BindPFlag("mqtt_max_retry_delay", mqttCmd.Flags().Lookup("mqtt_max_retry_delay"))
 }
