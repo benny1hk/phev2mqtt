@@ -559,7 +559,14 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 		SetUsername(mqttUsername).
 		SetPassword(mqttPassword).
 		SetAutoReconnect(true).
+		SetMaxReconnectInterval(10*time.Second).
 		SetDefaultPublishHandler(m.handleIncomingMqtt).
+		SetConnectionLostHandler(func(client mqtt.Client, err error) {
+			log.Errorf("MQTT connection lost: %v. Reconnecting in 10 seconds...", err)
+		}).
+		SetOnConnectHandler(func(client mqtt.Client) {
+			log.Infof("MQTT connected successfully")
+		}).
 		SetWill(m.topic("/available"), "offline", 0, true)
 
 	m.client = mqtt.NewClient(m.options)
