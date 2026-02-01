@@ -1869,8 +1869,7 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		"name": "__NAME__ Location",
 		"icon": "mdi:car",
 		"json_attributes_topic": "~/gps/location",
-		"state_topic": "~/gps/location",
-		"value_template": "home",
+		"source_type": "gps",
 		"avty_t": "~/available",
 		"unique_id": "__VIN___gps_location",
 		"dev": {
