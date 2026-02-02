@@ -1868,17 +1868,20 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		"%s/device_tracker/%s_gps/config": `{
 		"name": "__NAME__ Location",
 		"icon": "mdi:car",
-		"json_attributes_topic": "~/gps/location",
-		"source_type": "gps",
-		"avty_t": "~/available",
 		"unique_id": "__VIN___gps_location",
+		"json_attributes_topic": "~/gps/location",
+		"state_topic": "~/gps/location",
+		"value_template": "{{ value_json.latitude }},{{ value_json.longitude }}",
+		"source_type": "gps",
+		"payload_available": "online",
+		"payload_not_available": "offline",
 		"dev": {
 			"name": "PHEV __VIN__",
 			"identifiers": ["phev-__VIN__"],
 			"manufacturer": "Mitsubishi",
 			"model": "Outlander PHEV"
-		},
-		"~": "__TOPIC__"}`,
+		}
+		}`,
 		"%s/switch/%s_gps_enable/config": `{
 		"name": "__NAME__ GPS Tracking",
 		"icon": "mdi:map-marker",
