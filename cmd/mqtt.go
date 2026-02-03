@@ -1865,20 +1865,22 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		},
 		"~": "__TOPIC__"}`,
 		// GPS tracking
-		"%s/device_tracker/%s_gps/config": `{
-		"name": "__NAME__ Location",
-		"unique_id": "__VIN___gps_location",
-		"state_topic": "~/gps/location",
-		"source_type": "gps",
-		"payload_available": "online",
-		"payload_not_available": "offline",
-		"availability_topic": "~/available",
-		"device": {
-			"identifiers": ["phev-__VIN__"],
-			"name": "PHEV __VIN__",
-			"manufacturer": "Mitsubishi"
-		},
-		"~": "__TOPIC__"}`,
+		"%s/device_tracker/%s_tracker_v2/config": `{
+			"name": "__NAME__ Tracker",
+			"unique_id": "__VIN___gps_tracker_v2",
+			"state_topic": "__TOPIC__/gps/location",
+			"json_attributes_topic": "__TOPIC__/gps/location",
+			"value_template": "{{ value_json.gps_accuracy }}",
+			"source_type": "gps",
+			"payload_available": "online",
+			"payload_not_available": "offline",
+			"availability_topic": "__TOPIC__/available",
+			"device": {
+				"identifiers": ["phev-__VIN__"],
+				"name": "PHEV __VIN__",
+				"manufacturer": "Mitsubishi"
+			}
+		}`,
 		"%s/switch/%s_gps_enable/config": `{
 		"name": "__NAME__ GPS Tracking",
 		"icon": "mdi:map-marker",
