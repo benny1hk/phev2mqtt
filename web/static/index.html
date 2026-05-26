@@ -277,7 +277,7 @@
     <input type="password" id="pw-confirm" autocomplete="new-password" required>
     <div class="controls-row">
       <button type="submit" class="primary">Save</button>
-      <button type="button" class="secondary" onclick="closeChangePassword()">Cancel</button>
+      <button type="button" class="secondary" id="pw-cancel" onclick="closeChangePassword()">Cancel</button>
     </div>
   </form>
 </div>
@@ -313,11 +313,14 @@
       const me = await api('/api/me');
       document.getElementById('user-label').textContent = me.username;
       hide('login-view');
-      show('app-view');
       if (me.must_change_password) {
+        stopPolling();
+        hide('app-view');
         openChangePassword(true);
+      } else {
+        show('app-view');
+        startPolling();
       }
-      startPolling();
     } catch (e) {
       if (e.status === 401) {
         stopPolling();
@@ -357,7 +360,10 @@
     document.getElementById('pw-new').value = '';
     document.getElementById('pw-confirm').value = '';
     if (forced) {
-      setMsg('password-msg', 'err', 'Default password in use — please change it now.');
+      hide('pw-cancel');
+      setMsg('password-msg', 'err', 'Default password is in use. You must change it before continuing.');
+    } else {
+      show('pw-cancel');
     }
     show('password-modal');
   }
@@ -374,7 +380,10 @@
     try {
       await api('/api/password', { method: 'POST', body: JSON.stringify({ current, new: next }) });
       setMsg('password-msg', 'ok', 'Password changed');
-      setTimeout(closeChangePassword, 800);
+      setTimeout(() => {
+        closeChangePassword();
+        loadMe();
+      }, 800);
     } catch (e) {
       setMsg('password-msg', 'err', e.message);
     }
