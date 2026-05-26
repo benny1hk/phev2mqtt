@@ -2126,4 +2126,7 @@ func init() {
 	viper.BindPFlag("wifi_restart_time", mqttCmd.Flags().Lookup("wifi_restart_time"))
 	viper.BindPFlag("wifi_restart_retry_time", mqttCmd.Flags().Lookup("wifi_restart_retry_time"))
 	viper.BindPFlag("wifi_restart_command", mqttCmd.Flags().Lookup("wifi_restart_command"))
+
+	viper.SetDefault("web_enabled", true)
+	viper.SetDefault("web_listen", ":8888")
 }
