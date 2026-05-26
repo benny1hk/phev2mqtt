@@ -19,6 +19,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -36,6 +37,7 @@ import (
 	"github.com/adrianmo/go-nmea"
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
+	"github.com/buxtronix/phev2mqtt/web"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/tarm/serial"
@@ -516,6 +518,7 @@ type mqttClient struct {
 	client         mqtt.Client
 	options        *mqtt.ClientOptions
 	mqttData       map[string]string
+	dataMu         sync.RWMutex
 	updateInterval time.Duration
 
 	phev        *client.Client
@@ -579,6 +582,26 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 		return token.Error()
 	}
 
+	if viper.GetBool("web_enabled") {
+		listen := viper.GetString("web_listen")
+		if listen == "" {
+			listen = ":8888"
+		}
+		srv, err := web.NewServer(web.Config{
+			Listen:   listen,
+			Provider: &mqttStateAdapter{m: m},
+		})
+		if err != nil {
+			log.Errorf("web UI disabled: %v", err)
+		} else {
+			go func() {
+				if err := srv.Run(context.Background()); err != nil {
+					log.Errorf("web UI server error: %v", err)
+				}
+			}()
+		}
+	}
+
 	if !mqttDisableSet {
 		if token := m.client.Subscribe(m.topic("/set/#"), 0, nil); token.Wait() && token.Error() != nil {
 			return token.Error()
@@ -632,8 +655,16 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 func (m *mqttClient) publish(topic, payload string) {
 	//	if cache := m.mqttData[topic]; cache != payload {
 	m.client.Publish(m.topic(topic), 0, false, payload)
+	m.dataMu.Lock()
 	m.mqttData[topic] = payload
+	m.dataMu.Unlock()
 	// }
+}
+
+func (m *mqttClient) cachedValue(topic string) string {
+	m.dataMu.RLock()
+	defer m.dataMu.RUnlock()
+	return m.mqttData[topic]
 }
 
 func (m *mqttClient) publishSystemMetrics() {
@@ -1216,7 +1247,7 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 			m.publish("/charge/remaining", fmt.Sprintf("%d", reg.Remaining))
 		} else {
 			log.Debugf("Ignoring charge remanining reading: %v", reg.Remaining)
-			if cache := m.mqttData["/charge/remaining"]; cache != "" {
+			if cache := m.cachedValue("/charge/remaining"); cache != "" {
 				m.publish("/charge/remaining", cache)
 				log.Debugf("Publishing last best known charge remaining reading: %v", cache)
 			}
@@ -1236,7 +1267,7 @@ func (m *mqttClient) publishRegister(msg *protocol.PhevMessage) {
 		if (reg.Level > 5) && (reg.Level < 255) {
 			m.publish("/battery/level", fmt.Sprintf("%d", reg.Level))
 		} else {
-			if cache := m.mqttData["/battery/level"]; cache != "" {
+			if cache := m.cachedValue("/battery/level"); cache != "" {
 				m.publish("/battery/level", cache)
 				log.Debugf("Ignoring battery level reading: %v, publishing last best known: %v", reg.Level, cache)
 			}
@@ -1958,6 +1989,106 @@ func (m *mqttClient) publishHomeAssistantDiscovery(vin, topic, name string) {
 		}
 		//m.client.Publish(topic, 0, false, "{}")
 	}
+}
+
+// snapshot reads the most recent cached MQTT data and returns it shaped as a
+// web.Snapshot. Used by the embedded web UI; keeps the web package decoupled
+// from MQTT internals.
+func (m *mqttClient) snapshot() web.Snapshot {
+	m.dataMu.RLock()
+	defer m.dataMu.RUnlock()
+
+	s := web.Snapshot{
+		Doors:     map[string]bool{},
+		UpdatedAt: time.Now(),
+	}
+	if m.phev != nil {
+		// Best-effort: we don't track explicit "connected" state on
+		// mqttClient, but if we've ever published a VIN we've at least
+		// had a successful session in this process.
+		s.Connected = m.mqttData["/vin"] != ""
+	}
+
+	s.VIN = m.mqttData["/vin"]
+	if v := m.mqttData["/battery/level"]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.Battery = n
+		}
+	}
+	s.Charging = m.mqttData["/charge/charging"] == "on"
+	if v := m.mqttData["/charge/remaining"]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.ChargeRemaining = n
+		}
+	}
+	s.ChargerConnected = m.mqttData["/charge/plug"] == "connected"
+	// "/door/locked" publishes "open" when UNlocked (see publishRegister).
+	s.DoorsLocked = m.mqttData["/door/locked"] == "closed"
+	for _, d := range []string{"bonnet", "boot", "driver", "front_passenger", "rear_left", "rear_right"} {
+		s.Doors[d] = m.mqttData["/door/"+d] == "open"
+	}
+	s.ParkingLights = m.mqttData["/lights/parking"] == "on"
+	s.Headlights = m.mqttData["/lights/head"] == "on"
+	s.InteriorLights = m.mqttData["/lights/interior"] == "on"
+	s.HazardLights = m.mqttData["/lights/hazard"] == "on"
+	s.ClimateState = m.mqttData["/climate/state"]
+	if mode := m.mqttData["/climate/state"]; mode == "heat" || mode == "cool" || mode == "windscreen" {
+		s.ClimateMode = mode
+	}
+
+	if lat := m.mqttData["/gps/latitude"]; lat != "" {
+		gps := &web.GPSData{}
+		if v, err := strconv.ParseFloat(lat, 64); err == nil {
+			gps.Latitude = v
+		}
+		if v, err := strconv.ParseFloat(m.mqttData["/gps/longitude"], 64); err == nil {
+			gps.Longitude = v
+		}
+		if v, err := strconv.ParseFloat(m.mqttData["/gps/altitude"], 64); err == nil {
+			gps.Altitude = v
+		}
+		if v, err := strconv.ParseFloat(m.mqttData["/gps/speed"], 64); err == nil {
+			gps.Speed = v
+		}
+		if v, err := strconv.ParseFloat(m.mqttData["/gps/heading"], 64); err == nil {
+			gps.Heading = v
+		}
+		if v, err := strconv.Atoi(m.mqttData["/gps/satellites"]); err == nil {
+			gps.Satellites = v
+		}
+		if v, err := strconv.Atoi(m.mqttData["/gps/fix_quality"]); err == nil {
+			gps.FixQuality = v
+		}
+		s.GPS = gps
+	}
+
+	return s
+}
+
+// activeClient returns the current *client.Client or nil if not connected.
+func (m *mqttClient) activeClient() *client.Client {
+	return m.phev
+}
+
+// mqttStateAdapter exposes *mqttClient as a web.StateProvider. It owns no
+// state of its own.
+type mqttStateAdapter struct{ m *mqttClient }
+
+func (a *mqttStateAdapter) Snapshot() web.Snapshot { return a.m.snapshot() }
+func (a *mqttStateAdapter) StartClimate(mode string, duration int) error {
+	return web.StartClimateOnClient(a.m.activeClient(), mode, duration)
+}
+func (a *mqttStateAdapter) StopClimate() error {
+	return web.StopClimateOnClient(a.m.activeClient())
+}
+func (a *mqttStateAdapter) SetParkingLights(on bool) error {
+	return web.SetParkingLightsOnClient(a.m.activeClient(), on)
+}
+func (a *mqttStateAdapter) SetHeadlights(on bool) error {
+	return web.SetHeadlightsOnClient(a.m.activeClient(), on)
+}
+func (a *mqttStateAdapter) CancelChargeTimer() error {
+	return web.CancelChargeTimerOnClient(a.m.activeClient())
 }
 
 func init() {

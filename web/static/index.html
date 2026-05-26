@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>phev2mqtt</title>
+  <style>
+    :root {
+      --bg: #0f1216;
+      --panel: #181c22;
+      --panel-2: #1f2530;
+      --border: #2a313d;
+      --text: #e6e9ef;
+      --muted: #8a93a3;
+      --accent: #4aa3ff;
+      --ok: #3ecf8e;
+      --warn: #f6c343;
+      --err: #ff5c5c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 14px 20px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+    header .right { display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 14px; }
+    header button, header a { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+    main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+    .hidden { display: none !important; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .card h2 { margin: 0 0 14px 0; font-size: 14px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.06em; font-weight: 600; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .kv { background: var(--panel-2); padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+    .kv .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .kv .value { font-size: 18px; font-weight: 600; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .pill.ok { background: rgba(62,207,142,0.15); color: var(--ok); }
+    .pill.warn { background: rgba(246,195,67,0.15); color: var(--warn); }
+    .pill.err { background: rgba(255,92,92,0.15); color: var(--err); }
+    .pill.muted { background: rgba(138,147,163,0.15); color: var(--muted); }
+    .bar { background: var(--panel-2); border-radius: 6px; height: 10px; overflow: hidden; margin-top: 6px; }
+    .bar > div { background: var(--ok); height: 100%; transition: width 0.4s; }
+    form.login {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      max-width: 360px;
+      margin: 80px auto 0 auto;
+    }
+    form.login h2 { margin-top: 0; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+    input[type=text], input[type=password], select {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font: inherit;
+      margin-bottom: 12px;
+    }
+    button.primary {
+      background: var(--accent);
+      color: #0d1116;
+      border: none;
+      padding: 9px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      font: inherit;
+    }
+    button.primary:hover { filter: brightness(1.1); }
+    button.secondary {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button.secondary:hover { background: var(--border); }
+    button.danger { background: var(--err); color: #fff; }
+    .controls-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+    .msg { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
+    .msg.ok { background: rgba(62,207,142,0.15); color: var(--ok); }
+    .msg.err { background: rgba(255,92,92,0.15); color: var(--err); }
+    .doors-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 14px; }
+    .doors-list div { display: flex; justify-content: space-between; padding: 6px 10px; background: var(--panel-2); border-radius: 4px; }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center; z-index: 10;
+    }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      width: 100%;
+      max-width: 380px;
+    }
+    .modal h2 { margin-top: 0; }
+    footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
+  </style>
+</head>
+<body>
+
+<div id="login-view" class="hidden">
+  <form class="login" onsubmit="return doLogin(event)">
+    <h2>phev2mqtt</h2>
+    <div id="login-msg"></div>
+    <label>Username</label>
+    <input type="text" id="login-username" autocomplete="username" autofocus required>
+    <label>Password</label>
+    <input type="password" id="login-password" autocomplete="current-password" required>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</div>
+
+<div id="app-view" class="hidden">
+  <header>
+    <h1>phev2mqtt</h1>
+    <div class="right">
+      <span id="user-label"></span>
+      <button onclick="openChangePassword()">Change password</button>
+      <button onclick="doLogout()">Logout</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="status-msg"></div>
+
+    <div class="card">
+      <h2>Vehicle</h2>
+      <div class="grid">
+        <div class="kv">
+          <div class="label">Connection</div>
+          <div class="value" id="conn-status">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">VIN</div>
+          <div class="value" id="v-vin" style="font-size:14px">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Last updated</div>
+          <div class="value" id="v-updated" style="font-size:14px">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Battery & Charging</h2>
+      <div class="grid">
+        <div class="kv">
+          <div class="label">Battery</div>
+          <div class="value"><span id="v-battery">—</span>%</div>
+          <div class="bar"><div id="v-battery-bar" style="width:0%"></div></div>
+        </div>
+        <div class="kv">
+          <div class="label">Charger</div>
+          <div class="value" id="v-charger">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Charging</div>
+          <div class="value" id="v-charging">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Time remaining</div>
+          <div class="value" id="v-remaining">—</div>
+        </div>
+      </div>
+      <div class="controls-row">
+        <button class="secondary" onclick="cancelChargeTimer()">Cancel charge timer</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Doors & Security</h2>
+      <div class="grid">
+        <div class="kv">
+          <div class="label">Locks</div>
+          <div class="value" id="v-locked">—</div>
+        </div>
+      </div>
+      <div class="doors-list" id="v-doors" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Lights</h2>
+      <div class="grid">
+        <div class="kv">
+          <div class="label">Parking</div>
+          <div class="value" id="v-parking">—</div>
+          <div class="controls-row">
+            <button class="secondary" onclick="setLight('parking', true)">On</button>
+            <button class="secondary" onclick="setLight('parking', false)">Off</button>
+          </div>
+        </div>
+        <div class="kv">
+          <div class="label">Headlights</div>
+          <div class="value" id="v-headlights">—</div>
+          <div class="controls-row">
+            <button class="secondary" onclick="setLight('headlights', true)">On</button>
+            <button class="secondary" onclick="setLight('headlights', false)">Off</button>
+          </div>
+        </div>
+        <div class="kv">
+          <div class="label">Interior</div>
+          <div class="value" id="v-interior">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Hazard</div>
+          <div class="value" id="v-hazard">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Climate</h2>
+      <div class="grid">
+        <div class="kv">
+          <div class="label">State</div>
+          <div class="value" id="v-climate-state">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Mode</div>
+          <div class="value" id="v-climate-mode">—</div>
+        </div>
+      </div>
+      <div class="controls-row">
+        <select id="climate-mode-select">
+          <option value="heat">Heat</option>
+          <option value="cool">Cool</option>
+          <option value="windscreen">Windscreen</option>
+        </select>
+        <select id="climate-duration-select">
+          <option value="10">10 min</option>
+          <option value="20" selected>20 min</option>
+          <option value="30">30 min</option>
+        </select>
+        <button class="primary" onclick="startClimate()">Start</button>
+        <button class="secondary" onclick="stopClimate()">Stop</button>
+      </div>
+    </div>
+  </main>
+
+  <footer>phev2mqtt web UI</footer>
+</div>
+
+<div id="password-modal" class="modal-backdrop hidden">
+  <form class="modal" onsubmit="return doChangePassword(event)">
+    <h2>Change password</h2>
+    <div id="password-msg"></div>
+    <label>Current password</label>
+    <input type="password" id="pw-current" autocomplete="current-password" required>
+    <label>New password (min 8 chars)</label>
+    <input type="password" id="pw-new" autocomplete="new-password" required>
+    <label>Confirm new password</label>
+    <input type="password" id="pw-confirm" autocomplete="new-password" required>
+    <div class="controls-row">
+      <button type="submit" class="primary">Save</button>
+      <button type="button" class="secondary" onclick="closeChangePassword()">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<script>
+  let pollTimer = null;
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    }, opts || {}));
+    let body = null;
+    try { body = await res.json(); } catch (e) {}
+    if (!res.ok) {
+      const msg = body && body.error ? body.error : `HTTP ${res.status}`;
+      const err = new Error(msg); err.status = res.status; throw err;
+    }
+    return body;
+  }
+
+  function show(id) { document.getElementById(id).classList.remove('hidden'); }
+  function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+  function setMsg(id, type, text) {
+    const el = document.getElementById(id);
+    if (!text) { el.innerHTML = ''; return; }
+    el.innerHTML = `<div class="msg ${type}">${text}</div>`;
+  }
+
+  async function loadMe() {
+    try {
+      const me = await api('/api/me');
+      document.getElementById('user-label').textContent = me.username;
+      hide('login-view');
+      show('app-view');
+      if (me.must_change_password) {
+        openChangePassword(true);
+      }
+      startPolling();
+    } catch (e) {
+      if (e.status === 401) {
+        stopPolling();
+        hide('app-view');
+        show('login-view');
+      } else {
+        setMsg('status-msg', 'err', e.message);
+      }
+    }
+  }
+
+  async function doLogin(ev) {
+    ev.preventDefault();
+    setMsg('login-msg', '', '');
+    const username = document.getElementById('login-username').value;
+    const password = document.getElementById('login-password').value;
+    try {
+      await api('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+      document.getElementById('login-password').value = '';
+      loadMe();
+    } catch (e) {
+      setMsg('login-msg', 'err', e.message);
+    }
+    return false;
+  }
+
+  async function doLogout() {
+    try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
+    stopPolling();
+    hide('app-view');
+    show('login-view');
+  }
+
+  function openChangePassword(forced) {
+    setMsg('password-msg', '', '');
+    document.getElementById('pw-current').value = '';
+    document.getElementById('pw-new').value = '';
+    document.getElementById('pw-confirm').value = '';
+    if (forced) {
+      setMsg('password-msg', 'err', 'Default password in use — please change it now.');
+    }
+    show('password-modal');
+  }
+
+  function closeChangePassword() { hide('password-modal'); }
+
+  async function doChangePassword(ev) {
+    ev.preventDefault();
+    const current = document.getElementById('pw-current').value;
+    const next = document.getElementById('pw-new').value;
+    const confirm = document.getElementById('pw-confirm').value;
+    if (next !== confirm) { setMsg('password-msg', 'err', 'New passwords do not match'); return false; }
+    if (next.length < 8) { setMsg('password-msg', 'err', 'Password must be at least 8 characters'); return false; }
+    try {
+      await api('/api/password', { method: 'POST', body: JSON.stringify({ current, new: next }) });
+      setMsg('password-msg', 'ok', 'Password changed');
+      setTimeout(closeChangePassword, 800);
+    } catch (e) {
+      setMsg('password-msg', 'err', e.message);
+    }
+    return false;
+  }
+
+  function startPolling() {
+    refreshStatus();
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(refreshStatus, 5000);
+  }
+  function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  function pill(text, cls) { return `<span class="pill ${cls}">${text}</span>`; }
+
+  async function refreshStatus() {
+    try {
+      const s = await api('/api/status');
+      setMsg('status-msg', '', '');
+
+      document.getElementById('conn-status').innerHTML = s.connected
+        ? pill('Connected', 'ok') : pill('Disconnected', 'err');
+      document.getElementById('v-vin').textContent = s.vin || '—';
+      document.getElementById('v-updated').textContent = s.updated_at
+        ? new Date(s.updated_at).toLocaleTimeString() : '—';
+
+      document.getElementById('v-battery').textContent = s.battery_level || 0;
+      document.getElementById('v-battery-bar').style.width = (s.battery_level || 0) + '%';
+      document.getElementById('v-charger').innerHTML = s.charger_connected
+        ? pill('Connected', 'ok') : pill('Unplugged', 'muted');
+      document.getElementById('v-charging').innerHTML = s.charging
+        ? pill('Charging', 'ok') : pill('Idle', 'muted');
+      document.getElementById('v-remaining').textContent = s.charge_remaining_min
+        ? s.charge_remaining_min + ' min' : '—';
+
+      document.getElementById('v-locked').innerHTML = s.doors_locked
+        ? pill('Locked', 'ok') : pill('Unlocked', 'warn');
+      const doorsEl = document.getElementById('v-doors');
+      doorsEl.innerHTML = '';
+      const order = ['driver', 'front_passenger', 'rear_left', 'rear_right', 'boot', 'bonnet'];
+      for (const k of order) {
+        const open = s.doors && s.doors[k];
+        const label = k.replace('_', ' ');
+        doorsEl.insertAdjacentHTML('beforeend',
+          `<div><span>${label}</span>${open ? pill('Open', 'warn') : pill('Closed', 'muted')}</div>`);
+      }
+
+      document.getElementById('v-parking').innerHTML = s.parking_lights ? pill('On', 'warn') : pill('Off', 'muted');
+      document.getElementById('v-headlights').innerHTML = s.headlights ? pill('On', 'warn') : pill('Off', 'muted');
+      document.getElementById('v-interior').innerHTML = s.interior_lights ? pill('On', 'warn') : pill('Off', 'muted');
+      document.getElementById('v-hazard').innerHTML = s.hazard_lights ? pill('On', 'warn') : pill('Off', 'muted');
+
+      document.getElementById('v-climate-state').textContent = s.climate_state || '—';
+      document.getElementById('v-climate-mode').textContent = s.climate_mode || '—';
+    } catch (e) {
+      if (e.status === 401) {
+        stopPolling();
+        hide('app-view');
+        show('login-view');
+      } else {
+        setMsg('status-msg', 'err', e.message);
+      }
+    }
+  }
+
+  async function setLight(which, on) {
+    try {
+      await api('/api/lights/' + which, { method: 'POST', body: JSON.stringify({ on }) });
+      setMsg('status-msg', 'ok', `${which} ${on ? 'on' : 'off'} sent`);
+      setTimeout(refreshStatus, 500);
+    } catch (e) { setMsg('status-msg', 'err', e.message); }
+  }
+
+  async function startClimate() {
+    const mode = document.getElementById('climate-mode-select').value;
+    const duration = parseInt(document.getElementById('climate-duration-select').value, 10);
+    try {
+      await api('/api/climate/start', { method: 'POST', body: JSON.stringify({ mode, duration }) });
+      setMsg('status-msg', 'ok', `climate ${mode} ${duration}m sent`);
+      setTimeout(refreshStatus, 500);
+    } catch (e) { setMsg('status-msg', 'err', e.message); }
+  }
+
+  async function stopClimate() {
+    try {
+      await api('/api/climate/stop', { method: 'POST' });
+      setMsg('status-msg', 'ok', 'climate stop sent');
+      setTimeout(refreshStatus, 500);
+    } catch (e) { setMsg('status-msg', 'err', e.message); }
+  }
+
+  async function cancelChargeTimer() {
+    try {
+      await api('/api/charging/cancel-timer', { method: 'POST' });
+      setMsg('status-msg', 'ok', 'cancel charge timer sent');
+    } catch (e) { setMsg('status-msg', 'err', e.message); }
+  }
+
+  loadMe();
+</script>
+</body>
+</html>
