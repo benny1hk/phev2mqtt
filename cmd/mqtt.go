@@ -525,6 +525,9 @@ type mqttClient struct {
 	lastConnect time.Time
 	lastError   error
 
+	connMu        sync.RWMutex
+	phevConnected bool
+
 	prefix string
 
 	haDiscovery          bool
@@ -1152,9 +1155,11 @@ func (m *mqttClient) handlePhev(cmd *cobra.Command) error {
 	m.client.Publish(m.topic("/available"), 0, true, "online")
 
 	m.lastError = nil
+	m.setPhevConnected(true)
 
 	defer func() {
 		m.lastConnect = time.Now()
+		m.setPhevConnected(false)
 	}()
 
 	var encodingErrorCount = 0
@@ -2002,11 +2007,22 @@ func (m *mqttClient) snapshot() web.Snapshot {
 		Doors:     map[string]bool{},
 		UpdatedAt: time.Now(),
 	}
-	if m.phev != nil {
-		// Best-effort: we don't track explicit "connected" state on
-		// mqttClient, but if we've ever published a VIN we've at least
-		// had a successful session in this process.
-		s.Connected = m.mqttData["/vin"] != ""
+
+	phevConnected := m.isPhevConnected()
+	var phevLastSeenSec int64 = -1
+	if phevConnected {
+		phevLastSeenSec = 0
+	} else if !m.lastConnect.IsZero() {
+		phevLastSeenSec = int64(time.Since(m.lastConnect).Seconds())
+	}
+
+	s.Connections = web.ConnectionInfo{
+		MQTTAvailable:   true,
+		MQTTConnected:   m.client != nil && m.client.IsConnected(),
+		MQTTBroker:      viper.GetString("mqtt_server"),
+		PhevConnected:   phevConnected,
+		PhevAddress:     viper.GetString("address"),
+		PhevLastSeenSec: phevLastSeenSec,
 	}
 
 	s.VIN = m.mqttData["/vin"]
@@ -2070,6 +2086,43 @@ func (m *mqttClient) activeClient() *client.Client {
 	return m.phev
 }
 
+func (m *mqttClient) setPhevConnected(b bool) {
+	m.connMu.Lock()
+	m.phevConnected = b
+	m.connMu.Unlock()
+}
+
+func (m *mqttClient) isPhevConnected() bool {
+	m.connMu.RLock()
+	defer m.connMu.RUnlock()
+	return m.phevConnected
+}
+
+// reconnectPhev forces the PHEV session to tear down; the outer Run loop in
+// mqttClient.Run will call handlePhev again and rebuild the connection.
+func (m *mqttClient) reconnectPhev() error {
+	m.enabled = true
+	cl := m.phev
+	if cl == nil {
+		return nil
+	}
+	return cl.Close()
+}
+
+// reconnectMQTT forces a paho reconnect against the configured broker.
+// Auto-reconnect normally handles this transparently; this lets the user
+// trigger it manually from the web UI.
+func (m *mqttClient) reconnectMQTT() error {
+	if m.client == nil {
+		return fmt.Errorf("MQTT client not initialized")
+	}
+	m.client.Disconnect(250)
+	if token := m.client.Connect(); token.Wait() && token.Error() != nil {
+		return token.Error()
+	}
+	return nil
+}
+
 // mqttStateAdapter exposes *mqttClient as a web.StateProvider. It owns no
 // state of its own.
 type mqttStateAdapter struct{ m *mqttClient }
@@ -2090,6 +2143,8 @@ func (a *mqttStateAdapter) SetHeadlights(on bool) error {
 func (a *mqttStateAdapter) CancelChargeTimer() error {
 	return web.CancelChargeTimerOnClient(a.m.activeClient())
 }
+func (a *mqttStateAdapter) ReconnectMQTT() error { return a.m.reconnectMQTT() }
+func (a *mqttStateAdapter) ReconnectPhev() error { return a.m.reconnectPhev() }
 
 func init() {
 	clientCmd.AddCommand(mqttCmd)

@@ -72,6 +72,8 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.HandleFunc("/api/lights/parking", s.requireAuth(s.handleLightsParking))
 	mux.HandleFunc("/api/lights/headlights", s.requireAuth(s.handleLightsHeadlights))
 	mux.HandleFunc("/api/charging/cancel-timer", s.requireAuth(s.handleCancelChargeTimer))
+	mux.HandleFunc("/api/reconnect/mqtt", s.requireAuth(s.handleReconnectMQTT))
+	mux.HandleFunc("/api/reconnect/phev", s.requireAuth(s.handleReconnectPhev))
 
 	return mux
 }

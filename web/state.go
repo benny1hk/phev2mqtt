@@ -18,8 +18,21 @@ type Snapshot struct {
 	ClimateMode      string          `json:"climate_mode"`
 	ClimateState     string          `json:"climate_state"`
 	GPS              *GPSData        `json:"gps,omitempty"`
-	Connected        bool            `json:"connected"`
+	Connections      ConnectionInfo  `json:"connections"`
 	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+// ConnectionInfo describes the state of the two external links that the
+// service depends on: the MQTT broker, and the WiFi/TCP session to the PHEV
+// (the car). MQTTAvailable is false in standalone-web mode so the UI can
+// hide controls that don't apply.
+type ConnectionInfo struct {
+	MQTTAvailable    bool   `json:"mqtt_available"`
+	MQTTConnected    bool   `json:"mqtt_connected"`
+	MQTTBroker       string `json:"mqtt_broker"`
+	PhevConnected    bool   `json:"phev_connected"`
+	PhevAddress      string `json:"phev_address"`
+	PhevLastSeenSec  int64  `json:"phev_last_seen_sec"` // seconds since last successful session; -1 if never
 }
 
 // GPSData holds optional GPS data when the standalone driver doesn't provide
@@ -45,4 +58,6 @@ type StateProvider interface {
 	SetParkingLights(on bool) error
 	SetHeadlights(on bool) error
 	CancelChargeTimer() error
+	ReconnectMQTT() error
+	ReconnectPhev() error
 }

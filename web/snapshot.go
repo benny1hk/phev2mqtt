@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -16,10 +17,11 @@ import (
 type SnapshotDriver struct {
 	address string
 
-	mu        sync.RWMutex
-	snap      Snapshot
-	cl        *client.Client // current client; nil if disconnected
-	connected bool
+	mu          sync.RWMutex
+	snap        Snapshot
+	cl          *client.Client // current client; nil if disconnected
+	connected   bool
+	lastConnect time.Time // time of last successful session (zero if never)
 }
 
 // NewSnapshotDriver returns a driver that will connect to the given address
@@ -29,6 +31,8 @@ func NewSnapshotDriver(address string) *SnapshotDriver {
 		address: address,
 	}
 	d.snap.Doors = map[string]bool{}
+	d.snap.Connections.PhevAddress = address
+	d.snap.Connections.PhevLastSeenSec = -1
 	return d
 }
 
@@ -68,7 +72,8 @@ func (d *SnapshotDriver) session(ctx context.Context) error {
 	d.mu.Lock()
 	d.cl = cl
 	d.connected = true
-	d.snap.Connected = true
+	d.snap.Connections.PhevConnected = true
+	d.lastConnect = time.Now()
 	d.mu.Unlock()
 
 	defer func() {
@@ -76,7 +81,8 @@ func (d *SnapshotDriver) session(ctx context.Context) error {
 		d.mu.Lock()
 		d.cl = nil
 		d.connected = false
-		d.snap.Connected = false
+		d.snap.Connections.PhevConnected = false
+		d.lastConnect = time.Now()
 		d.mu.Unlock()
 	}()
 
@@ -107,7 +113,7 @@ func (d *SnapshotDriver) session(ctx context.Context) error {
 func (d *SnapshotDriver) markDisconnected() {
 	d.mu.Lock()
 	d.connected = false
-	d.snap.Connected = false
+	d.snap.Connections.PhevConnected = false
 	d.mu.Unlock()
 }
 
@@ -173,6 +179,13 @@ func (d *SnapshotDriver) Snapshot() Snapshot {
 			s.Doors[k] = v
 		}
 	}
+	if d.lastConnect.IsZero() {
+		s.Connections.PhevLastSeenSec = -1
+	} else {
+		s.Connections.PhevLastSeenSec = int64(time.Since(d.lastConnect).Seconds())
+	}
+	// Standalone mode: no MQTT bridge.
+	s.Connections.MQTTAvailable = false
 	return s
 }
 
@@ -202,4 +215,19 @@ func (d *SnapshotDriver) SetHeadlights(on bool) error {
 
 func (d *SnapshotDriver) CancelChargeTimer() error {
 	return CancelChargeTimerOnClient(d.activeClient())
+}
+
+// ReconnectMQTT is not supported in standalone mode (there is no broker).
+func (d *SnapshotDriver) ReconnectMQTT() error {
+	return fmt.Errorf("MQTT is not enabled in standalone web mode")
+}
+
+// ReconnectPhev closes the current PHEV client; the session loop will
+// reconnect on the next iteration.
+func (d *SnapshotDriver) ReconnectPhev() error {
+	cl := d.activeClient()
+	if cl == nil {
+		return nil // already disconnected, loop will retry
+	}
+	return cl.Close()
 }
