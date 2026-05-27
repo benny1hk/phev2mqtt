@@ -56,8 +56,10 @@ are seeded (admin/admin) and you will be prompted to change them.`,
 		go driver.Run(ctx)
 
 		srv, err := web.NewServer(web.Config{
-			Listen:   listen,
-			Provider: driver,
+			Listen:        listen,
+			Provider:      driver,
+			WifiInterface: viper.GetString("wifi_interface"),
+			WifiUseSudo:   viper.GetBool("wifi_use_sudo"),
 		})
 		if err != nil {
 			return err
@@ -70,4 +72,6 @@ func init() {
 	rootCmd.AddCommand(webCmd)
 	webCmd.Flags().String("address", client.DefaultAddress, "Address of the PHEV")
 	webCmd.Flags().String("web_listen", ":8888", "Listen address for the web server")
+	viper.SetDefault("wifi_interface", "wlan0")
+	viper.SetDefault("wifi_use_sudo", true)
 }

@@ -126,6 +126,20 @@ func (d *SnapshotDriver) applyRegister(reg protocol.Register) {
 	switch r := reg.(type) {
 	case *protocol.RegisterVIN:
 		d.snap.VIN = r.VIN
+		d.snap.Registrations = r.Registrations
+	case *protocol.RegisterECUVersion:
+		d.snap.ECUVersion = r.Version
+	case *protocol.RegisterClimateTimer:
+		for i, t := range r.Timers {
+			d.snap.ClimateTimers[i] = ClimateTimer{
+				Enabled:  t.Enabled,
+				Hour:     int(t.Hour),
+				Minute:   int(t.Minute),
+				Mode:     t.Mode,
+				Duration: int(t.Duration),
+				Days:     append([]string(nil), t.Days...),
+			}
+		}
 	case *protocol.RegisterBatteryLevel:
 		if r.Level > 5 && r.Level < 255 {
 			d.snap.Battery = r.Level
@@ -184,8 +198,11 @@ func (d *SnapshotDriver) Snapshot() Snapshot {
 	} else {
 		s.Connections.PhevLastSeenSec = int64(time.Since(d.lastConnect).Seconds())
 	}
-	// Standalone mode: no MQTT bridge.
+	// Standalone mode capability flags.
 	s.Connections.MQTTAvailable = false
+	s.Connections.BridgePausable = false
+	s.Connections.GPSAvailable = false
+	s.Connections.RebootAvailable = true
 	return s
 }
 
@@ -230,4 +247,27 @@ func (d *SnapshotDriver) ReconnectPhev() error {
 		return nil // already disconnected, loop will retry
 	}
 	return cl.Close()
+}
+
+func (d *SnapshotDriver) SetClimateTimer(slot int, t ClimateTimer) error {
+	return SetClimateTimerOnClient(d.activeClient(), slot, t)
+}
+
+func (d *SnapshotDriver) ClearClimateTimers() error {
+	return ClearClimateTimersOnClient(d.activeClient())
+}
+
+// SetGPSEnabled is not supported in standalone mode (no GPS reader).
+func (d *SnapshotDriver) SetGPSEnabled(on bool) error {
+	return fmt.Errorf("GPS reader is not enabled in standalone web mode")
+}
+
+// SetBridgePaused is not supported in standalone mode (no bridge to pause).
+func (d *SnapshotDriver) SetBridgePaused(paused bool) error {
+	return fmt.Errorf("bridge pause is only available when running the MQTT bridge")
+}
+
+// RebootHost reboots the host machine via `sudo reboot`.
+func (d *SnapshotDriver) RebootHost() error {
+	return execReboot()
 }

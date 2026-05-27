@@ -98,7 +98,20 @@
       font: inherit;
     }
     button.secondary:hover { background: var(--border); }
-    button.danger { background: var(--err); color: #fff; }
+    button.danger, button.secondary.danger { background: var(--err); color: #fff; border-color: var(--err); }
+    .timer-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; background: var(--panel-2); border-radius:6px; border:1px solid var(--border); margin-bottom:8px; font-size:14px; }
+    .timer-row .summary { color: var(--text); }
+    .timer-row .summary.muted { color: var(--muted); }
+    .days-row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+    .days-row label { display:flex; align-items:center; gap:4px; padding:4px 8px; background: var(--panel-2); border-radius:4px; border:1px solid var(--border); cursor:pointer; }
+    .days-row label.on { background: var(--accent); color: #0d1116; border-color: var(--accent); }
+    .days-row input { display:none; }
+    .wifi-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; background: var(--panel-2); border-radius:6px; border:1px solid var(--border); margin-bottom:6px; font-size:14px; cursor:pointer; }
+    .wifi-row:hover { background: var(--border); }
+    .wifi-row .ssid { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .wifi-row .sec { color: var(--muted); font-size:12px; min-width:60px; text-align:right; }
+    .wifi-row .sig { display:inline-block; width:36px; text-align:right; font-variant-numeric: tabular-nums; }
+    .wifi-row.in-use { border-color: var(--ok); }
     .controls-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
     .msg { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
     .msg.ok { background: rgba(62,207,142,0.15); color: var(--ok); }
@@ -156,6 +169,14 @@
           <div class="value" id="v-vin" style="font-size:14px">—</div>
         </div>
         <div class="kv">
+          <div class="label">ECU version</div>
+          <div class="value" id="v-ecu" style="font-size:14px">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Registrations</div>
+          <div class="value" id="v-registrations" style="font-size:14px">—</div>
+        </div>
+        <div class="kv">
           <div class="label">Last updated</div>
           <div class="value" id="v-updated" style="font-size:14px">—</div>
         </div>
@@ -181,6 +202,83 @@
             <button class="secondary" onclick="reconnect('phev', this)">Reconnect</button>
           </div>
         </div>
+        <div class="kv" id="conn-bridge-card">
+          <div class="label">Bridge</div>
+          <div class="value" id="conn-bridge-status">—</div>
+          <div class="controls-row">
+            <button class="secondary" id="bridge-pause-btn" onclick="setBridgePaused(true, this)">Pause</button>
+            <button class="secondary" id="bridge-resume-btn" onclick="setBridgePaused(false, this)">Resume</button>
+          </div>
+        </div>
+        <div class="kv" id="conn-gps-card">
+          <div class="label">GPS reader</div>
+          <div class="value" id="conn-gps-status">—</div>
+          <div class="controls-row">
+            <button class="secondary" id="gps-on-btn" onclick="setGPSEnabled(true, this)">Enable</button>
+            <button class="secondary" id="gps-off-btn" onclick="setGPSEnabled(false, this)">Disable</button>
+          </div>
+        </div>
+        <div class="kv" id="conn-reboot-card">
+          <div class="label">Host</div>
+          <div class="value" style="font-size:14px">Reboot the machine running phev2mqtt</div>
+          <div class="controls-row">
+            <button class="secondary danger" onclick="openRebootModal()">Reboot host</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="system-card">
+      <h2>System</h2>
+      <div class="grid">
+        <div class="kv">
+          <div class="label">CPU temp</div>
+          <div class="value" id="sys-cpu-temp">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">CPU load</div>
+          <div class="value" id="sys-cpu-load">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Memory</div>
+          <div class="value" id="sys-memory">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Disk</div>
+          <div class="value" id="sys-disk">—</div>
+        </div>
+        <div class="kv">
+          <div class="label">Uptime</div>
+          <div class="value" id="sys-uptime" style="font-size:16px">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>WiFi (vehicle link)</h2>
+      <div style="background:rgba(246,195,67,0.08);border:1px solid rgba(246,195,67,0.3);color:var(--warn);padding:8px 12px;border-radius:6px;font-size:13px;margin-bottom:12px">
+        Switching this WiFi changes the connection to the car. The MQTT bridge will reconnect to the new network.
+      </div>
+      <div class="grid">
+        <div class="kv">
+          <div class="label">Status</div>
+          <div class="value" id="wifi-status-pill">—</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px" id="wifi-status-meta">—</div>
+        </div>
+      </div>
+      <div class="controls-row" style="margin-top:12px">
+        <button class="secondary" onclick="scanWifi(this)">Scan nearby</button>
+        <button class="secondary" onclick="toggleWifiSaved()">Saved networks</button>
+      </div>
+      <div id="wifi-networks" style="margin-top:12px"></div>
+      <div id="wifi-saved" style="margin-top:12px; display:none"></div>
+    </div>
+
+    <div class="card">
+      <h2>Climate timers</h2>
+      <div id="climate-timers-list"></div>
+      <div class="controls-row" style="margin-top:12px">
+        <button class="secondary" onclick="clearAllTimers(this)">Clear all timers</button>
       </div>
     </div>
 
@@ -296,6 +394,80 @@
     <div class="controls-row">
       <button type="submit" class="primary">Save</button>
       <button type="button" class="secondary" id="pw-cancel" onclick="closeChangePassword()">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<div id="reboot-modal" class="modal-backdrop hidden">
+  <form class="modal" onsubmit="return doReboot(event)">
+    <h2>Reboot host?</h2>
+    <div id="reboot-msg"></div>
+    <p style="color:var(--muted);font-size:14px">This will reboot the machine running phev2mqtt. The MQTT bridge and web UI will be unavailable for a minute or two.</p>
+    <label>Type <b>REBOOT</b> to confirm</label>
+    <input type="text" id="reboot-confirm" autocomplete="off" required>
+    <div class="controls-row">
+      <button type="submit" class="primary danger">Reboot now</button>
+      <button type="button" class="secondary" onclick="hide('reboot-modal')">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<div id="timer-modal" class="modal-backdrop hidden">
+  <form class="modal" onsubmit="return doSaveTimer(event)">
+    <h2 id="timer-modal-title">Edit climate timer</h2>
+    <div id="timer-msg"></div>
+    <label><input type="checkbox" id="timer-enabled"> Enabled</label>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <div style="flex:1">
+        <label>Hour</label>
+        <select id="timer-hour"></select>
+      </div>
+      <div style="flex:1">
+        <label>Minute</label>
+        <select id="timer-minute">
+          <option value="0">00</option><option value="10">10</option><option value="20">20</option>
+          <option value="30">30</option><option value="40">40</option><option value="50">50</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <div style="flex:1">
+        <label>Mode</label>
+        <select id="timer-mode">
+          <option value="heat">Heat</option><option value="cool">Cool</option><option value="windscreen">Windscreen</option>
+        </select>
+      </div>
+      <div style="flex:1">
+        <label>Duration</label>
+        <select id="timer-duration">
+          <option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option>
+        </select>
+      </div>
+    </div>
+    <label style="margin-top:12px">Repeat days (none = one-shot)</label>
+    <div class="days-row" id="timer-days"></div>
+    <div class="controls-row">
+      <button type="submit" class="primary">Save</button>
+      <button type="button" class="secondary" onclick="hide('timer-modal')">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<div id="wifi-modal" class="modal-backdrop hidden">
+  <form class="modal" onsubmit="return doWifiConnect(event)">
+    <h2>Connect to WiFi</h2>
+    <div id="wifi-msg"></div>
+    <label>Network</label>
+    <input type="text" id="wifi-ssid" required>
+    <label>Password (8–63 chars, leave blank for open)</label>
+    <div style="display:flex;gap:6px">
+      <input type="password" id="wifi-password" autocomplete="off" style="flex:1;margin-bottom:0">
+      <button type="button" class="secondary" onclick="toggleWifiPassword()" id="wifi-show-btn">Show</button>
+    </div>
+    <label style="margin-top:12px"><input type="checkbox" id="wifi-hidden"> Hidden network</label>
+    <div class="controls-row">
+      <button type="submit" class="primary" id="wifi-connect-btn">Connect</button>
+      <button type="button" class="secondary" onclick="hide('wifi-modal')">Cancel</button>
     </div>
   </form>
 </div>
@@ -428,7 +600,7 @@
     return Math.floor(sec / 86400) + 'd ago';
   }
 
-  function renderConnections(c) {
+  function renderConnections(c, gpsEnabled) {
     const mqttCard = document.getElementById('conn-mqtt-card');
     if (!c.mqtt_available) {
       mqttCard.style.display = 'none';
@@ -442,6 +614,182 @@
       ? pill('Connected', 'ok') : pill('Disconnected', 'err');
     const meta = (c.phev_address || '—') + ' · last seen ' + formatAgo(c.phev_last_seen_sec);
     document.getElementById('conn-phev-meta').textContent = meta;
+
+    const bridgeCard = document.getElementById('conn-bridge-card');
+    if (!c.bridge_pausable) {
+      bridgeCard.style.display = 'none';
+    } else {
+      bridgeCard.style.display = '';
+      document.getElementById('conn-bridge-status').innerHTML = c.bridge_paused
+        ? pill('Paused', 'warn') : pill('Active', 'ok');
+      document.getElementById('bridge-pause-btn').disabled = c.bridge_paused;
+      document.getElementById('bridge-resume-btn').disabled = !c.bridge_paused;
+    }
+
+    const gpsCard = document.getElementById('conn-gps-card');
+    if (!c.gps_available) {
+      gpsCard.style.display = 'none';
+    } else {
+      gpsCard.style.display = '';
+      document.getElementById('conn-gps-status').innerHTML = gpsEnabled
+        ? pill('Enabled', 'ok') : pill('Disabled', 'muted');
+      document.getElementById('gps-on-btn').disabled = gpsEnabled;
+      document.getElementById('gps-off-btn').disabled = !gpsEnabled;
+    }
+
+    const rebootCard = document.getElementById('conn-reboot-card');
+    rebootCard.style.display = c.reboot_available ? '' : 'none';
+  }
+
+  function renderSystem(sys) {
+    const card = document.getElementById('system-card');
+    if (!sys) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    document.getElementById('sys-cpu-temp').textContent = sys.cpu_temp_c ? sys.cpu_temp_c.toFixed(1) + ' °C' : '—';
+    document.getElementById('sys-cpu-load').textContent = sys.cpu_load_percent ? sys.cpu_load_percent.toFixed(1) + ' %' : '—';
+    document.getElementById('sys-memory').textContent   = sys.memory_percent  ? sys.memory_percent.toFixed(1)  + ' %' : '—';
+    document.getElementById('sys-disk').textContent     = sys.disk_percent    ? sys.disk_percent.toFixed(1)    + ' %' : '—';
+    document.getElementById('sys-uptime').textContent   = sys.uptime_sec ? formatUptime(sys.uptime_sec) : '—';
+  }
+
+  function formatUptime(sec) {
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+
+  const DAY_NAMES = ['sun','mon','tue','wed','thu','fri','sat'];
+  const DAY_LABELS = {sun:'Sun',mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat'};
+
+  function renderTimers(timers) {
+    const list = document.getElementById('climate-timers-list');
+    list.innerHTML = '';
+    for (let i = 0; i < 5; i++) {
+      const t = timers[i] || {enabled:false};
+      let summary;
+      if (!t.enabled) {
+        summary = `<span class="summary muted">Slot ${i+1}: (disabled)</span>`;
+      } else {
+        const hh = String(t.hour).padStart(2,'0');
+        const mm = String(t.minute).padStart(2,'0');
+        const days = (t.days && t.days.length) ? t.days.join(',') : 'once';
+        summary = `<span class="summary">Slot ${i+1}: <b>${t.mode}</b> at ${hh}:${mm} for ${t.duration}m · ${days}</span>`;
+      }
+      list.insertAdjacentHTML('beforeend',
+        `<div class="timer-row">${summary}<button class="secondary" onclick="openTimerModal(${i+1})">Edit</button></div>`);
+    }
+    // Cache the current timer values so the edit modal can prefill.
+    window.__timers = timers;
+  }
+
+  async function setGPSEnabled(on, btn) {
+    btn.disabled = true;
+    try {
+      await api('/api/gps/enabled', { method: 'POST', body: JSON.stringify({ on }) });
+      setMsg('status-msg', 'ok', 'GPS ' + (on ? 'enabled' : 'disabled'));
+      setTimeout(refreshStatus, 500);
+    } catch (e) { setMsg('status-msg', 'err', e.message); btn.disabled = false; }
+  }
+
+  async function setBridgePaused(paused, btn) {
+    btn.disabled = true;
+    try {
+      await api('/api/bridge/paused', { method: 'POST', body: JSON.stringify({ paused }) });
+      setMsg('status-msg', 'ok', 'Bridge ' + (paused ? 'paused' : 'resumed'));
+      setTimeout(refreshStatus, 500);
+    } catch (e) { setMsg('status-msg', 'err', e.message); btn.disabled = false; }
+  }
+
+  async function clearAllTimers(btn) {
+    if (!confirm('Clear all 5 climate timer slots?')) return;
+    btn.disabled = true;
+    try {
+      await api('/api/climate/timers/clear', { method: 'POST' });
+      setMsg('status-msg', 'ok', 'Cleared all timers');
+      setTimeout(refreshStatus, 500);
+    } catch (e) { setMsg('status-msg', 'err', e.message); }
+    finally { btn.disabled = false; }
+  }
+
+  let editingSlot = 0;
+  function openTimerModal(slot) {
+    editingSlot = slot;
+    setMsg('timer-msg', '', '');
+    document.getElementById('timer-modal-title').textContent = `Edit climate timer ${slot}`;
+    const t = (window.__timers && window.__timers[slot-1]) || {enabled:false, hour:7, minute:0, mode:'heat', duration:20, days:[]};
+    document.getElementById('timer-enabled').checked = !!t.enabled;
+    // hour select
+    const hourSel = document.getElementById('timer-hour');
+    if (hourSel.options.length === 0) {
+      for (let h = 0; h < 24; h++) {
+        const o = document.createElement('option');
+        o.value = String(h); o.text = String(h).padStart(2,'0');
+        hourSel.add(o);
+      }
+    }
+    hourSel.value = String(t.hour || 0);
+    document.getElementById('timer-minute').value = String(t.minute || 0);
+    document.getElementById('timer-mode').value = t.mode || 'heat';
+    document.getElementById('timer-duration').value = String(t.duration || 20);
+    // days
+    const daysEl = document.getElementById('timer-days');
+    daysEl.innerHTML = '';
+    const selected = new Set(t.days || []);
+    for (const d of DAY_NAMES) {
+      const checked = selected.has(d) ? ' checked' : '';
+      const cls = selected.has(d) ? ' class="on"' : '';
+      daysEl.insertAdjacentHTML('beforeend',
+        `<label${cls}><input type="checkbox" value="${d}"${checked} onchange="this.parentElement.classList.toggle('on', this.checked)">${DAY_LABELS[d]}</label>`);
+    }
+    show('timer-modal');
+  }
+
+  async function doSaveTimer(ev) {
+    ev.preventDefault();
+    const days = Array.from(document.querySelectorAll('#timer-days input:checked')).map(i => i.value);
+    const body = {
+      enabled: document.getElementById('timer-enabled').checked,
+      hour: parseInt(document.getElementById('timer-hour').value, 10),
+      minute: parseInt(document.getElementById('timer-minute').value, 10),
+      mode: document.getElementById('timer-mode').value,
+      duration: parseInt(document.getElementById('timer-duration').value, 10),
+      days,
+    };
+    try {
+      await api('/api/climate/timers/' + editingSlot, { method: 'POST', body: JSON.stringify(body) });
+      hide('timer-modal');
+      setMsg('status-msg', 'ok', `Timer ${editingSlot} saved`);
+      setTimeout(refreshStatus, 500);
+    } catch (e) {
+      setMsg('timer-msg', 'err', e.message);
+    }
+    return false;
+  }
+
+  function openRebootModal() {
+    setMsg('reboot-msg', '', '');
+    document.getElementById('reboot-confirm').value = '';
+    show('reboot-modal');
+  }
+
+  async function doReboot(ev) {
+    ev.preventDefault();
+    const confirm = document.getElementById('reboot-confirm').value;
+    if (confirm !== 'REBOOT') {
+      setMsg('reboot-msg', 'err', 'Type REBOOT exactly to confirm');
+      return false;
+    }
+    try {
+      await api('/api/system/reboot', { method: 'POST', body: JSON.stringify({ confirm }) });
+      setMsg('reboot-msg', 'ok', 'Reboot requested — service will go down shortly');
+      setTimeout(() => hide('reboot-modal'), 1500);
+    } catch (e) {
+      setMsg('reboot-msg', 'err', e.message);
+    }
+    return false;
   }
 
   async function reconnect(which, btn) {
@@ -466,10 +814,15 @@
       setMsg('status-msg', '', '');
 
       document.getElementById('v-vin').textContent = s.vin || '—';
+      document.getElementById('v-ecu').textContent = s.ecu_version || '—';
+      document.getElementById('v-registrations').textContent = s.registrations ? String(s.registrations) : '—';
       document.getElementById('v-updated').textContent = s.updated_at
         ? new Date(s.updated_at).toLocaleTimeString() : '—';
 
-      renderConnections(s.connections || {});
+      renderConnections(s.connections || {}, s.gps_enabled);
+      renderSystem(s.system);
+      renderTimers(s.climate_timers || []);
+      refreshWifiStatus();
 
       document.getElementById('v-battery').textContent = s.battery_level || 0;
       document.getElementById('v-battery-bar').style.width = (s.battery_level || 0) + '%';
@@ -541,6 +894,148 @@
       await api('/api/charging/cancel-timer', { method: 'POST' });
       setMsg('status-msg', 'ok', 'cancel charge timer sent');
     } catch (e) { setMsg('status-msg', 'err', e.message); }
+  }
+
+  // --- WiFi management ---
+
+  async function refreshWifiStatus() {
+    try {
+      const st = await api('/api/wifi/status');
+      const pill_el = document.getElementById('wifi-status-pill');
+      const meta_el = document.getElementById('wifi-status-meta');
+      pill_el.innerHTML = st.state === 'connected' ? pill('Connected', 'ok') : pill(st.state || 'Disconnected', 'err');
+      const parts = [];
+      parts.push(`if: ${st.interface || '—'}`);
+      if (st.ssid) parts.push(`SSID: ${st.ssid}`);
+      if (st.ip_address) parts.push(`IP: ${st.ip_address}`);
+      meta_el.textContent = parts.join(' · ');
+    } catch (e) {
+      document.getElementById('wifi-status-pill').innerHTML = pill('Error', 'err');
+      document.getElementById('wifi-status-meta').textContent = e.message;
+    }
+  }
+
+  async function scanWifi(btn) {
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Scanning…';
+    const listEl = document.getElementById('wifi-networks');
+    listEl.innerHTML = '<div style="color:var(--muted);font-size:13px">Scanning…</div>';
+    try {
+      const res = await api('/api/wifi/scan');
+      const nets = (res.networks || []).filter(n => n.ssid);
+      nets.sort((a,b) => b.signal - a.signal);
+      if (nets.length === 0) {
+        listEl.innerHTML = '<div style="color:var(--muted);font-size:13px">No networks found.</div>';
+      } else {
+        listEl.innerHTML = nets.map(n => {
+          const mark = n.in_use ? '★ ' : '';
+          const cls = n.in_use ? 'wifi-row in-use' : 'wifi-row';
+          const sec = n.security || '--';
+          const ssidEsc = n.ssid.replace(/'/g, "\\'");
+          return `<div class="${cls}" onclick="openWifiModal('${ssidEsc}', ${sec === '--' ? 'true' : 'false'})">
+                    <span class="ssid">${mark}${n.ssid}</span>
+                    <span class="sig">${n.signal}%</span>
+                    <span class="sec">${sec}</span>
+                  </div>`;
+        }).join('');
+      }
+    } catch (e) {
+      listEl.innerHTML = `<div class="msg err">${e.message}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }
+
+  function openWifiModal(ssid, isOpen) {
+    setMsg('wifi-msg', '', '');
+    document.getElementById('wifi-ssid').value = ssid;
+    document.getElementById('wifi-password').value = '';
+    document.getElementById('wifi-password').type = 'password';
+    document.getElementById('wifi-show-btn').textContent = 'Show';
+    document.getElementById('wifi-hidden').checked = false;
+    if (isOpen) {
+      document.getElementById('wifi-password').placeholder = '(open network — leave blank)';
+    } else {
+      document.getElementById('wifi-password').placeholder = '';
+    }
+    show('wifi-modal');
+  }
+
+  function toggleWifiPassword() {
+    const f = document.getElementById('wifi-password');
+    const b = document.getElementById('wifi-show-btn');
+    if (f.type === 'password') { f.type = 'text'; b.textContent = 'Hide'; }
+    else { f.type = 'password'; b.textContent = 'Show'; }
+  }
+
+  async function doWifiConnect(ev) {
+    ev.preventDefault();
+    const ssid = document.getElementById('wifi-ssid').value;
+    const password = document.getElementById('wifi-password').value;
+    const hidden = document.getElementById('wifi-hidden').checked;
+    const btn = document.getElementById('wifi-connect-btn');
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Connecting…';
+    setMsg('wifi-msg', '', '');
+    try {
+      await api('/api/wifi/connect', { method: 'POST', body: JSON.stringify({ ssid, password, hidden }) });
+      setMsg('wifi-msg', 'ok', 'Connected');
+      setTimeout(() => { hide('wifi-modal'); refreshWifiStatus(); }, 800);
+    } catch (e) {
+      setMsg('wifi-msg', 'err', e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+    return false;
+  }
+
+  async function toggleWifiSaved() {
+    const el = document.getElementById('wifi-saved');
+    if (el.style.display === 'none') {
+      el.style.display = '';
+      el.innerHTML = '<div style="color:var(--muted);font-size:13px">Loading…</div>';
+      try {
+        const res = await api('/api/wifi/saved');
+        const saved = res.saved || [];
+        if (saved.length === 0) {
+          el.innerHTML = '<div style="color:var(--muted);font-size:13px">No saved networks.</div>';
+          return;
+        }
+        el.innerHTML = saved.map(s => {
+          const status = s.active ? pill('Active', 'ok') : (s.autoconnect ? pill('Auto', 'muted') : pill('Saved', 'muted'));
+          const nameEsc = s.name.replace(/'/g, "\\'");
+          return `<div class="wifi-row" style="cursor:default">
+                    <span class="ssid">${s.name}</span>
+                    <span>${status}</span>
+                    <button class="secondary danger" onclick="forgetWifi('${nameEsc}', this)">Forget</button>
+                  </div>`;
+        }).join('');
+      } catch (e) {
+        el.innerHTML = `<div class="msg err">${e.message}</div>`;
+      }
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  async function forgetWifi(name, btn) {
+    if (!confirm(`Forget saved network "${name}"?`)) return;
+    btn.disabled = true;
+    try {
+      await api('/api/wifi/forget', { method: 'POST', body: JSON.stringify({ name }) });
+      setMsg('status-msg', 'ok', `forgot ${name}`);
+      // Reload the saved list (hide then re-toggle to refresh)
+      const el = document.getElementById('wifi-saved');
+      el.style.display = 'none';
+      toggleWifiSaved();
+    } catch (e) {
+      setMsg('status-msg', 'err', e.message);
+      btn.disabled = false;
+    }
   }
 
   loadMe();

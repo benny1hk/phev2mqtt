@@ -2,9 +2,12 @@ package web
 
 import (
 	"fmt"
+	"os/exec"
+	"time"
 
 	"github.com/buxtronix/phev2mqtt/client"
 	"github.com/buxtronix/phev2mqtt/protocol"
+	log "github.com/sirupsen/logrus"
 )
 
 // Lowercased valid modes/durations. Mirror what the MQTT handler accepts in
@@ -135,6 +138,82 @@ func CancelChargeTimerOnClient(c *client.Client) error {
 	}
 	if err := c.SetRegister(0x17, []byte{0x11}); err != nil {
 		return fmt.Errorf("cancel charge timer step 2: %w", err)
+	}
+	return nil
+}
+
+// SetClimateTimerOnClient writes one of the five climate timer slots
+// (1..5). Mirrors the MQTT handler at cmd/mqtt.go:873 — validates input,
+// encodes a RegisterClimateTimer with the target slot enabled and the
+// others disabled, and writes register 0x1a.
+func SetClimateTimerOnClient(c *client.Client, slot int, t ClimateTimer) error {
+	if c == nil {
+		return fmt.Errorf("not connected to vehicle")
+	}
+	if slot < 1 || slot > 5 {
+		return fmt.Errorf("invalid timer slot %d (want 1..5)", slot)
+	}
+	if t.Enabled {
+		if t.Hour < 0 || t.Hour > 23 || t.Minute < 0 || t.Minute > 50 || t.Minute%10 != 0 {
+			return fmt.Errorf("invalid time %02d:%02d (hour 0-23, minute 0/10/20/30/40/50)", t.Hour, t.Minute)
+		}
+		if t.Duration != 10 && t.Duration != 20 && t.Duration != 30 {
+			return fmt.Errorf("invalid duration %d (want 10|20|30)", t.Duration)
+		}
+		if _, ok := climateModes[t.Mode]; !ok {
+			return fmt.Errorf("invalid mode %q (want cool|heat|windscreen)", t.Mode)
+		}
+	}
+
+	reg := &protocol.RegisterClimateTimer{}
+	for i := 0; i < 5; i++ {
+		reg.Timers[i].Enabled = false
+	}
+	reg.Timers[slot-1] = protocol.ClimateTimer{
+		Enabled:  t.Enabled,
+		Hour:     uint8(t.Hour),
+		Minute:   uint8(t.Minute),
+		Mode:     t.Mode,
+		Duration: uint8(t.Duration),
+		Days:     t.Days,
+	}
+
+	encoded := reg.Encode()
+	if err := c.SetRegister(protocol.SetClimateTimerRegister, encoded.Data); err != nil {
+		return fmt.Errorf("setting climate timer %d: %w", slot, err)
+	}
+	return nil
+}
+
+// execReboot triggers `sudo reboot` after a short delay so callers can
+// return a response first. Lifted from cmd/mqtt.go:/set/system/reboot.
+func execReboot() error {
+	log.Warnf("Reboot requested via web UI, rebooting in 5 seconds...")
+	go func() {
+		time.Sleep(5 * time.Second)
+		if err := exec.Command("sudo", "reboot").Run(); err != nil {
+			log.Errorf("Failed to reboot: %v", err)
+		}
+	}()
+	return nil
+}
+
+// ClearClimateTimersOnClient disables all five timer slots. 16-byte payload
+// copied from cmd/mqtt.go:937 (/set/climate/timer/clear).
+func ClearClimateTimersOnClient(c *client.Client) error {
+	if c == nil {
+		return fmt.Errorf("not connected to vehicle")
+	}
+	data := make([]byte, 16)
+	data[0] = 0x00
+	for i := 1; i < 16; i += 3 {
+		data[i] = 0xfe
+		data[i+1] = 0x07
+		data[i+2] = 0x00
+	}
+	data[15] = 0x01
+	if err := c.SetRegister(protocol.SetClimateTimerRegister, data); err != nil {
+		return fmt.Errorf("clearing climate timers: %w", err)
 	}
 	return nil
 }

@@ -11,8 +11,10 @@ import (
 
 // Config holds runtime options for the HTTP server.
 type Config struct {
-	Listen   string
-	Provider StateProvider
+	Listen         string
+	Provider       StateProvider
+	WifiInterface  string // default wlan0
+	WifiUseSudo    bool   // default true
 }
 
 // Server is the HTTP API + static UI for phev2mqtt.
@@ -21,6 +23,7 @@ type Server struct {
 	provider StateProvider
 	creds    *credentials
 	sessions *sessionStore
+	wifi     *WifiManager
 	mux      *http.ServeMux
 	httpSrv  *http.Server
 }
@@ -34,6 +37,9 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.Listen == "" {
 		cfg.Listen = ":8888"
 	}
+	if cfg.WifiInterface == "" {
+		cfg.WifiInterface = "wlan0"
+	}
 	creds, err := loadCredentials()
 	if err != nil {
 		return nil, err
@@ -43,6 +49,10 @@ func NewServer(cfg Config) (*Server, error) {
 		provider: cfg.Provider,
 		creds:    creds,
 		sessions: newSessionStore(),
+		wifi: &WifiManager{
+			Iface:   cfg.WifiInterface,
+			UseSudo: cfg.WifiUseSudo,
+		},
 	}
 	s.mux = s.buildMux()
 	s.httpSrv = &http.Server{
@@ -74,6 +84,15 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.HandleFunc("/api/charging/cancel-timer", s.requireAuth(s.handleCancelChargeTimer))
 	mux.HandleFunc("/api/reconnect/mqtt", s.requireAuth(s.handleReconnectMQTT))
 	mux.HandleFunc("/api/reconnect/phev", s.requireAuth(s.handleReconnectPhev))
+	mux.HandleFunc("/api/climate/timers/", s.requireAuth(s.handleClimateTimer))
+	mux.HandleFunc("/api/gps/enabled", s.requireAuth(s.handleGPSEnabled))
+	mux.HandleFunc("/api/bridge/paused", s.requireAuth(s.handleBridgePaused))
+	mux.HandleFunc("/api/system/reboot", s.requireAuth(s.handleReboot))
+	mux.HandleFunc("/api/wifi/status", s.requireAuth(s.handleWifiStatus))
+	mux.HandleFunc("/api/wifi/scan", s.requireAuth(s.handleWifiScan))
+	mux.HandleFunc("/api/wifi/connect", s.requireAuth(s.handleWifiConnect))
+	mux.HandleFunc("/api/wifi/saved", s.requireAuth(s.handleWifiSaved))
+	mux.HandleFunc("/api/wifi/forget", s.requireAuth(s.handleWifiForget))
 
 	return mux
 }

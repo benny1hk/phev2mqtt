@@ -591,8 +591,10 @@ func (m *mqttClient) Run(cmd *cobra.Command, args []string) error {
 			listen = ":8888"
 		}
 		srv, err := web.NewServer(web.Config{
-			Listen:   listen,
-			Provider: &mqttStateAdapter{m: m},
+			Listen:        listen,
+			Provider:      &mqttStateAdapter{m: m},
+			WifiInterface: viper.GetString("wifi_interface"),
+			WifiUseSudo:   viper.GetBool("wifi_use_sudo"),
 		})
 		if err != nil {
 			log.Errorf("web UI disabled: %v", err)
@@ -2023,6 +2025,53 @@ func (m *mqttClient) snapshot() web.Snapshot {
 		PhevConnected:   phevConnected,
 		PhevAddress:     viper.GetString("address"),
 		PhevLastSeenSec: phevLastSeenSec,
+		BridgePausable:  true,
+		BridgePaused:    !m.enabled,
+		GPSAvailable:    true,
+		RebootAvailable: true,
+	}
+
+	s.ECUVersion = m.mqttData["/ecuversion"]
+	if v := m.mqttData["/registrations"]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.Registrations = n
+		}
+	}
+	if m.gps != nil {
+		s.GPSEnabled = m.gps.isEnabled()
+	}
+
+	// Climate timers: each slot is published as a JSON string under
+	// /climate/timer/{1-5} by publishRegister. Parse them back.
+	for i := 0; i < 5; i++ {
+		raw := m.mqttData[fmt.Sprintf("/climate/timer/%d", i+1)]
+		if raw == "" {
+			continue
+		}
+		var pt protocol.ClimateTimer
+		if err := json.Unmarshal([]byte(raw), &pt); err != nil {
+			continue
+		}
+		s.ClimateTimers[i] = web.ClimateTimer{
+			Enabled:  pt.Enabled,
+			Hour:     int(pt.Hour),
+			Minute:   int(pt.Minute),
+			Mode:     pt.Mode,
+			Duration: int(pt.Duration),
+			Days:     append([]string(nil), pt.Days...),
+		}
+	}
+
+	// System metrics — best-effort; on non-Linux all fields stay zero.
+	metrics := collectSystemMetrics()
+	if metrics != nil {
+		s.System = &web.SystemInfo{
+			CPUTempC:      metrics.CPUTemp,
+			MemoryPercent: metrics.MemoryPercent,
+			CPULoadPct:    metrics.CPULoad,
+			DiskPercent:   metrics.DiskPercent,
+			UptimeSec:     metrics.UptimeSeconds,
+		}
 	}
 
 	s.VIN = m.mqttData["/vin"]
@@ -2123,6 +2172,39 @@ func (m *mqttClient) reconnectMQTT() error {
 	return nil
 }
 
+// setBridgePaused replicates the /connection {on,off} MQTT handler:
+// "off" tears down the PHEV session and stops the Run loop from reopening
+// it; "on" lets the Run loop reconnect on its next tick.
+func (m *mqttClient) setBridgePaused(paused bool) error {
+	if paused {
+		m.enabled = false
+		if m.phev != nil {
+			_ = m.phev.Close()
+		}
+		if m.client != nil {
+			m.client.Publish(m.topic("/available"), 0, true, "offline")
+		}
+	} else {
+		m.enabled = true
+	}
+	return nil
+}
+
+// setGPSEnabled flips the GPS reader on/off and mirrors the MQTT
+// /gps/status topic so downstream subscribers see the change.
+func (m *mqttClient) setGPSEnabled(on bool) error {
+	if m.gps == nil {
+		return fmt.Errorf("GPS subsystem not initialized")
+	}
+	m.gps.setEnabled(on)
+	if on {
+		m.publish("/gps/status", "on")
+	} else {
+		m.publish("/gps/status", "off")
+	}
+	return nil
+}
+
 // mqttStateAdapter exposes *mqttClient as a web.StateProvider. It owns no
 // state of its own.
 type mqttStateAdapter struct{ m *mqttClient }
@@ -2145,6 +2227,28 @@ func (a *mqttStateAdapter) CancelChargeTimer() error {
 }
 func (a *mqttStateAdapter) ReconnectMQTT() error { return a.m.reconnectMQTT() }
 func (a *mqttStateAdapter) ReconnectPhev() error { return a.m.reconnectPhev() }
+func (a *mqttStateAdapter) SetClimateTimer(slot int, t web.ClimateTimer) error {
+	return web.SetClimateTimerOnClient(a.m.activeClient(), slot, t)
+}
+func (a *mqttStateAdapter) ClearClimateTimers() error {
+	return web.ClearClimateTimersOnClient(a.m.activeClient())
+}
+func (a *mqttStateAdapter) SetGPSEnabled(on bool) error   { return a.m.setGPSEnabled(on) }
+func (a *mqttStateAdapter) SetBridgePaused(p bool) error  { return a.m.setBridgePaused(p) }
+func (a *mqttStateAdapter) RebootHost() error             { return a.m.rebootHost() }
+
+func (m *mqttClient) rebootHost() error {
+	log.Warnf("Reboot requested via web UI, rebooting system in 5 seconds...")
+	m.publish("/system/status", "rebooting")
+	go func() {
+		time.Sleep(5 * time.Second)
+		if err := exec.Command("sudo", "reboot").Run(); err != nil {
+			log.Errorf("Failed to reboot: %v", err)
+			m.publish("/system/status", "reboot_failed")
+		}
+	}()
+	return nil
+}
 
 func init() {
 	clientCmd.AddCommand(mqttCmd)
@@ -2184,4 +2288,6 @@ func init() {
 
 	viper.SetDefault("web_enabled", true)
 	viper.SetDefault("web_listen", ":8888")
+	viper.SetDefault("wifi_interface", "wlan0")
+	viper.SetDefault("wifi_use_sudo", true)
 }
