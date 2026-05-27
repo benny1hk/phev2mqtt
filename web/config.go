@@ -36,6 +36,19 @@ func loadCredentials() (*credentials, error) {
 		passwordHash: viper.GetString(configKeyPasswordHash),
 	}
 
+	// Viper may not have credentials when the user runs with
+	// --config=/dev/null (a common pattern for stateless service configs).
+	// Fall back to reading them directly from the credentials file so a
+	// previously-changed password survives restarts.
+	if c.passwordHash == "" {
+		if u, h, ok := readCredentialsFromFile(); ok {
+			if c.username == "" {
+				c.username = u
+			}
+			c.passwordHash = h
+		}
+	}
+
 	if c.username == "" {
 		c.username = defaultUsername
 	}
@@ -60,6 +73,50 @@ func loadCredentials() (*credentials, error) {
 	}
 
 	return c, nil
+}
+
+// credentialsPath returns the file path used for reading and writing the web
+// credentials. Normally this is viper.ConfigFileUsed(). When viper has no
+// usable config file (empty, or pointed at /dev/null to skip main-config
+// loading), fall back to $HOME/.phev2mqtt.yaml so credentials still persist
+// across restarts.
+func credentialsPath() (string, error) {
+	p := viper.ConfigFileUsed()
+	if p != "" && p != os.DevNull && p != "/dev/null" {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".phev2mqtt.yaml"), nil
+}
+
+// readCredentialsFromFile reads username + password-hash directly from the
+// credentials YAML file. Returns ok=false if the file doesn't exist or
+// doesn't contain a password hash. Parse errors are logged and ignored —
+// they shouldn't prevent the service from starting with seeded defaults.
+func readCredentialsFromFile() (username, hash string, ok bool) {
+	path, err := credentialsPath()
+	if err != nil {
+		return "", "", false
+	}
+	data, err := ioutil.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "", "", false
+	}
+	m := map[string]interface{}{}
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		log.Debugf("could not parse %s while loading web credentials: %v", path, err)
+		return "", "", false
+	}
+	if u, isStr := m[configKeyUsername].(string); isStr {
+		username = u
+	}
+	if h, isStr := m[configKeyPasswordHash].(string); isStr {
+		hash = h
+	}
+	return username, hash, hash != ""
 }
 
 func (c *credentials) get() (string, string, bool) {
@@ -95,18 +152,15 @@ func (c *credentials) setPassword(newPassword string) error {
 	})
 }
 
-// persistConfig rewrites the viper-managed YAML file with the given keys
+// persistConfig rewrites the credentials YAML file with the given keys
 // updated, preserving any other keys already present. The file is written
-// atomically (temp + rename). If no config file is in use yet, one is created
-// at the default location ($HOME/.phev2mqtt.yaml).
+// atomically (temp + rename). The target is chosen by credentialsPath() —
+// normally viper.ConfigFileUsed(), but $HOME/.phev2mqtt.yaml if the user
+// passed --config=/dev/null or no config file is in use.
 func persistConfig(updates map[string]interface{}) error {
-	path := viper.ConfigFileUsed()
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("could not determine home directory: %w", err)
-		}
-		path = filepath.Join(home, ".phev2mqtt.yaml")
+	path, err := credentialsPath()
+	if err != nil {
+		return err
 	}
 
 	existing := map[string]interface{}{}
